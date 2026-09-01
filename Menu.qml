@@ -122,6 +122,9 @@ Item {
   property var providerQueue: []
   property int providerRevision: 0
   property string extensionQuery: ""
+  // The query as qalc received it, after unit aliases were resolved. Shown as
+  // the expression, so the row says what was actually evaluated.
+  property string extensionExpression: ""
   property string extensionResult: ""
   property var resultExtension: null
   // A root shortcut can focus one extension's input without creating a second
@@ -618,6 +621,7 @@ Item {
     extensionQueryProc.generation = root.extensionQueryGeneration
     extensionQueryProc.revision = request.revision
     extensionQueryProc.query = request.query
+    extensionQueryProc.normalizedQuery = request.normalizedQuery
     extensionQueryProc.extensionId = request.extensionId
     extensionQueryProc.collected = ""
     extensionQueryProc.outputOverflow = false
@@ -628,11 +632,15 @@ Item {
   }
 
   function queueExtensionQuery(extension, query, revision) {
+    var dispatched = extension.normalizeUnits ? MenuModel.normalizeCalculationQuery(query) : query
     root.pendingExtensionQuery = {
       extensionId: extension.id,
+      // The raw query, because the staleness check compares against
+      // effectiveExtensionQuery(); only the command sees the rewrite.
       query: query,
+      normalizedQuery: dispatched,
       revision: revision,
-      command: root.commandArguments(extension.command, { query: query, extensionDir: extension.sourceDir })
+      command: root.commandArguments(extension.command, { query: dispatched, extensionDir: extension.sourceDir })
     }
     if (extensionQueryProc.running && !extensionQueryProc.stopping)
       root.stopExtensionQuery("newer query queued")
@@ -655,6 +663,7 @@ Item {
   function scheduleExtensionQuery() {
     root.invalidateExtensionQuery("query context changed")
     root.extensionQuery = ""
+    root.extensionExpression = ""
     root.extensionResult = ""
     root.resultExtension = null
     root.unavailableResultExtension = null
@@ -758,6 +767,7 @@ Item {
     root.invalidateExtensionQuery("left focused extension")
     root.focusedExtension = null
     root.extensionQuery = ""
+    root.extensionExpression = ""
     root.extensionResult = ""
     root.resultExtension = null
     root.unavailableResultExtension = null
@@ -2055,15 +2065,21 @@ Item {
       }
 
       if (liveResult && root.resultExtension) {
+        // The expression reads on the left and the answer on the right, so the
+        // row is a ledger line rather than a label prefixed with "=".
+        var resultCurrency = MenuModel.isCurrencyResult(liveResult)
+        var resultValue = MenuModel.formatCalculationValue(liveResult)
         var resultItem = root.normalizeItem("extension.result", {
           icon: root.resultExtension.icon,
           iconFont: root.resultExtension.iconFont,
-          label: "= " + liveResult,
+          label: MenuModel.calculationExpression(root.extensionExpression || root.extensionQuery || query, resultCurrency),
           description: root.resultExtension.description,
-          action: root.shellCommand(root.resultExtension.resultCommand, { result: liveResult, query: query })
+          // What is shown is what is copied.
+          action: root.shellCommand(root.resultExtension.resultCommand, { result: resultValue, query: query })
         })
         var resultRow = root.displayRow(resultItem, root.resultExtension.description, -1)
         resultRow.matchPriority = 110
+        resultRow.value = resultValue
         rows.push(resultRow)
       }
 
@@ -2573,6 +2589,7 @@ Item {
     emojiRowModel.clear()
     root.focusedExtension = null
     root.extensionQuery = ""
+    root.extensionExpression = ""
     root.extensionResult = ""
     root.resultExtension = null
     root.unavailableResultExtension = null
@@ -2865,6 +2882,7 @@ Item {
   Process {
     id: extensionQueryProc
     property string query: ""
+    property string normalizedQuery: ""
     property string extensionId: ""
     property string collected: ""
     property bool outputOverflow: false
@@ -2889,6 +2907,7 @@ Item {
       )
       if (accept) {
         root.extensionQuery = extensionQueryProc.query
+        root.extensionExpression = extensionQueryProc.normalizedQuery
         root.extensionResult = exitCode === 0 && !extensionQueryProc.outputOverflow ? extensionQueryProc.collected.trim() : ""
         root.rebuildDisplay()
         if (root.extensionResult && root.resultExtension.capability === "currency") currencyRates.refreshIfStale()
@@ -3805,6 +3824,7 @@ Item {
               required property int childCount
               required property bool starred
               required property bool disabled
+              required property string value
 
               readonly property bool hasCursor: root.cursorActive && row.index === root.selectedIndex
               readonly property bool isApp: row.kind === "app"
@@ -3883,11 +3903,30 @@ Item {
                 y: contentColumn.y + labelText.y + (labelText.height - height) / 2
               }
 
+              // The answer to a calculation or conversion, right-aligned and
+              // larger. It takes the accent colour so it reads as the row's
+              // payload rather than as more subtitle text.
+              Text {
+                id: valueText
+                visible: row.value.length > 0
+                text: row.value
+                color: root.selectedText
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.title
+                font.weight: Font.Medium
+                horizontalAlignment: Text.AlignRight
+                elide: Text.ElideRight
+                width: Math.min(implicitWidth, row.width * 0.5)
+                anchors.right: trail.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
               Column {
                 id: contentColumn
                 anchors.left: row.isImageFile ? imagePreview.right : (row.hasIcon ? iconText.right : parent.left)
                 anchors.leftMargin: row.hasIcon ? Style.space(6) : root.rowReservedBorderLeft + Style.space(18)
-                anchors.right: trail.left
+                anchors.right: row.value.length > 0 ? valueText.left : trail.left
                 anchors.rightMargin: Style.space(6)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(3)

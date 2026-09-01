@@ -310,6 +310,28 @@ Live-query extensions recognize input, run asynchronously, and display the comma
 }
 ```
 
+`normalizeUnits` opts a provider into unit rewriting before its command runs.
+qalc reads an abbreviated plural as the singular times seconds — `lbs` is
+`lb·s`, `kms` is `km·s` — and a bare temperature letter as a physics constant:
+`c` the speed of light, `f` femto, `k` kilo. So `180 lbs to kg` answered
+`81.65 kg·s` and `100 c to f` answered `2.99e25 fm/s`. With the flag set, those
+spellings are rewritten to the ones qalc evaluates, and the rewritten query is
+what the result row displays, so the row says what was actually evaluated.
+
+SI-prefixed seconds (`ms`, `ns`, `ps`, `us`, `fs`) are deliberately never
+rewritten, and a bare `c`, `f`, or `k` is only read as a temperature when both
+sides of the conversion are temperatures — so `500 ms to s` and `3 c to m` are
+left alone. The flag defaults to false, so a third-party query provider is
+never rewritten.
+
+The same flag gives a lone amount and unit its implied counterpart: `1 inch`
+becomes `1 inch to cm`, `80 kg` becomes `80 kg to lb`. Each pair crosses the
+metric/imperial line, which is the only reading that makes a lone unit worth
+converting. A stated target always wins. A one-letter unit must be separated
+from the amount — `500 g` converts, `5g` does not — which is what keeps `4k`,
+`5g`, and `1080p` out of the calculator; the extension's `match` rules carry
+the same restriction so such a query never reaches it in the first place.
+
 Match rules are case-insensitive regular expressions:
 
 - Every expression in `all` must match.

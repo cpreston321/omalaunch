@@ -10,8 +10,10 @@
   "priority": 20,
   "requires": ["qalc", "wl-copy"],
   "match": {
-    "all": ["^\\s*[+-]?(?:\\d|\\.\\d)", "\\b[A-Za-z]{3}\\b.*\\b(to|in)\\b.*\\b[A-Za-z]{3}\\b"]
+    "all": ["^\\s*[+-]?(?:\\d|\\.\\d)", "\\b[A-Za-z]{3}\\b.*\\b(to|in)\\b.*\\b[A-Za-z]{3}\\b"],
+    "none": ["\\b(mph|kph|kmh|mpg|psi|btu|cal|deg|rad|bar|atm|nmi|cup|tsp|day|min|sec|hrs|lbs|kgs|ohm|amp|rpm|ppm|dpi|kwh)\\b"]
   },
-  "command": ["qalc", "-t", "-m", "1500", "{query}"],
+  "normalizeUnits": true,
+  "command": ["qalc", "-t", "-m", "1500", "-s", "conv none", "{query}"],
   "resultCommand": ["wl-copy", "--", "{result}"]
 }

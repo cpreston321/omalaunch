@@ -11,9 +11,12 @@
   "requires": ["qalc", "wl-copy"],
   "match": {
     "all": ["^\\s*[+-]?(?:\\d|\\.\\d)", "\\d"],
-    "any": ["\\b(to|in)\\b", "[+\\-*\\/%^]"],
+    "any": ["\\b(to|in)\\b", "[+\\-*\\/%^]",
+      "(?:^|[\\s\\d])(inch|inches|cm|mm|km|mi|miles?|ft|foot|feet|yds?|yards?|lbs?|pounds?|kgs?|ozs?|ounces?|tons?|gals?|gallons?|ml|floz|cups?|tsps?|tbsps?|celsius|fahrenheit|mph|kmh|kph|litres?|liters?)\\s*$",
+      "\\d\\s+(m|g|l)\\s*$"],
     "none": ["[+\\-*\\/%^(]\\s*$"]
   },
-  "command": ["qalc", "-t", "-m", "1500", "{query}"],
+  "normalizeUnits": true,
+  "command": ["qalc", "-t", "-m", "1500", "-s", "conv none", "{query}"],
   "resultCommand": ["wl-copy", "--", "{result}"]
 }

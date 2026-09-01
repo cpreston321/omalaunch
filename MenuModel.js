@@ -537,6 +537,7 @@ function openStateReset() {
     emojiExtension: null,
     focusedExtension: null,
     extensionQuery: "",
+    extensionExpression: "",
     extensionResult: "",
     resultExtension: null,
     unavailableResultExtension: null
@@ -930,6 +931,7 @@ function normalizeExtension(raw) {
     extension.matchNoneRegex = []
     extension.resultCommand = stringArray(raw.resultCommand)
     if (extension.resultCommand.length === 0) extension.resultCommand = ["wl-copy", "--", "{result}"]
+    extension.normalizeUnits = raw.normalizeUnits === true
     if (extension.matchAll.length === 0 && extension.matchAny.length === 0) return null
     try {
       for (var j = 0; j < extension.matchAll.length; j++) {
@@ -1785,6 +1787,175 @@ function emojiSections(values, query, options) {
   return { cells: cells, rows: rows, sectioned: true }
 }
 
+// qalc reads an abbreviated plural as the singular times seconds — "lbs" is
+// lb·s, "kms" is km·s, "tsps" is tsp·s — and reads a bare temperature letter as
+// a physics constant: "c" the speed of light, "f" femto, "k" kilo. So "180 lbs
+// to kg" answered "81.65 kg·s" and "100 c to f" answered "2.99e25 fm/s".
+// Neither is what someone typing into a launcher means.
+//
+// The map is curated rather than a rule that strips a trailing "s", because
+// ms, ns, ps, us and fs are real units: SI-prefixed seconds. Stripping those
+// would break "500 ms to s".
+var UNIT_ALIASES = {
+  kms: "km", cms: "cm", mms: "mm", fts: "ft", ins: "in", yds: "yd", mis: "mi",
+  lbs: "lb", ozs: "oz", kgs: "kg",
+  gals: "gal", qts: "qt", pints: "pint", tsps: "tsp", tbsps: "tbsp",
+  mins: "min", secs: "sec",
+  // Compact rates qalc does not recognise. kph and mph it does.
+  kmh: "km/h", kmph: "km/h", mps: "m/s"
+}
+
+var TEMPERATURE_UNITS = {
+  c: "°C", celsius: "°C", centigrade: "°C", degc: "°C", "°c": "°C",
+  f: "°F", fahrenheit: "°F", degf: "°F", "°f": "°F",
+  k: "K", kelvin: "K", degk: "K"
+}
+
+var TEMPERATURE_CONVERSION = /^([\s\S]*?)([A-Za-z°]+)\s+(to|in)\s+([A-Za-z°]+)\s*$/i
+
+// A bare amount and unit is a conversion request with the obvious counterpart
+// left unsaid: "1 inch" means centimetres, "80 kg" means pounds. Each entry
+// crosses the metric/imperial line, which is the only reading that makes a
+// lone unit worth converting at all.
+//
+// Deliberately absent: a bare c, f, k, or s. They are ambiguous even in a
+// conversion, and a launcher query like "4k" or "5g" must stay a search.
+var IMPLICIT_TARGETS = {
+  inch: "cm", inches: "cm", "in": "cm",
+  cm: "inch", mm: "inch", m: "ft", km: "mi",
+  mi: "km", mile: "km", miles: "km",
+  ft: "cm", foot: "cm", feet: "cm",
+  yd: "m", yard: "m", yards: "m",
+  lb: "kg", pound: "kg", pounds: "kg", kg: "lb",
+  oz: "g", ounce: "g", ounces: "g", g: "oz", gram: "oz", grams: "oz",
+  ton: "kg", tons: "kg",
+  l: "gal", liter: "gal", liters: "gal", litre: "gal", litres: "gal",
+  gal: "l", gallon: "l", gallons: "l",
+  ml: "floz", floz: "ml",
+  cup: "ml", cups: "ml", tsp: "ml", tbsp: "ml",
+  celsius: "fahrenheit", fahrenheit: "celsius",
+  mph: "km/h", "km/h": "mph"
+}
+
+var BARE_AMOUNT = /^([+-]?[0-9][0-9,]*(?:\.[0-9]+)?)(\s*)([A-Za-z°]+(?:\/[A-Za-z]+)?)$/
+
+// A trailing "to" or "in" with nothing after it is not a conversion — "2 in"
+// is two inches — so the keyword only counts when something follows it.
+function implicitConversionTarget(query) {
+  var text = String(query || "").trim()
+  if (/\b(to|in)\b\s*\S/i.test(text)) return ""
+  var parts = BARE_AMOUNT.exec(text)
+  if (!parts) return ""
+  var unit = parts[3].toLowerCase()
+  // A one-letter unit must be separated from the amount. Without this, "5g"
+  // and "4k" stop being searches and start being conversions.
+  if (unit.length === 1 && parts[2].length === 0) return ""
+  var target = IMPLICIT_TARGETS[unit]
+  return target && target !== unit ? target : ""
+}
+
+function normalizeCalculationQuery(query) {
+  var text = String(query === undefined || query === null ? "" : query)
+  if (!text.trim()) return text
+
+  // Unit aliases are unambiguous, so a plain token swap is safe anywhere.
+  text = text.replace(/[A-Za-z]+/g, function(token) {
+    var alias = UNIT_ALIASES[token.toLowerCase()]
+    return alias === undefined ? token : alias
+  })
+
+  // A lone amount and unit gains its implied counterpart before the
+  // temperature pass, so "100 celsius" becomes "100 °C to °F".
+  var implicit = implicitConversionTarget(text)
+  if (implicit) text = text.trim() + " to " + implicit
+
+  // Temperature is rewritten only when both sides of the conversion are
+  // temperatures. That is what makes a bare "c" safe to touch: on its own it
+  // still means the speed of light, and "3 c to m" is left alone.
+  var pair = TEMPERATURE_CONVERSION.exec(text)
+  if (pair) {
+    var from = TEMPERATURE_UNITS[pair[2].toLowerCase()]
+    var to = TEMPERATURE_UNITS[pair[4].toLowerCase()]
+    if (from && to) text = pair[1] + from + " " + pair[3] + " " + to
+  }
+
+  return text
+}
+
+// qalc prints a currency code before the amount and to full precision
+// ("CAD 13.89019350"). A conversion is read as money, so present it the way
+// money is written: amount first, two decimals, grouped thousands.
+var CURRENCY_RESULT = /^([A-Za-z]{3})\s+([+-]?[0-9][0-9,]*(?:\.[0-9]+)?)$/
+var LEADING_NUMBER = /^([+-]?[0-9][0-9,]*(?:\.[0-9]+)?)([\s\S]*)$/
+
+function groupThousands(text) {
+  var parts = String(text).split(".")
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+  return parts.join(".")
+}
+
+// Trailing zeros in a fraction carry no information; a bare trailing point is
+// never wanted either.
+function trimTrailingZeros(text) {
+  var value = String(text)
+  if (value.indexOf(".") < 0) return value
+  return value.replace(/(\.[0-9]*?)0+$/, "$1").replace(/\.$/, "")
+}
+
+// qalc answers to full precision: "81.6466266 kg", "0.3962580785 gal". Two
+// decimals reads well above 1, but would flatten a value below it, so a small
+// number keeps four significant digits instead.
+function tidyNumber(raw) {
+  var text = String(raw)
+  var amount = Number(text.replace(/,/g, ""))
+  if (!isFinite(amount)) return text
+  var tidy = Math.abs(amount) >= 1 ? amount.toFixed(2) : amount.toPrecision(4)
+  // toPrecision can return exponential notation for very small values, which
+  // is less readable here than the original digits.
+  if (tidy.indexOf("e") >= 0 || tidy.indexOf("E") >= 0) return text
+  return groupThousands(trimTrailingZeros(tidy))
+}
+
+function isCurrencyResult(raw) {
+  return CURRENCY_RESULT.test(String(raw || "").trim())
+}
+
+function formatCalculationValue(raw) {
+  var text = String(raw || "").trim()
+  if (!text) return ""
+
+  var currency = CURRENCY_RESULT.exec(text)
+  if (currency) {
+    var amount = Number(currency[2].replace(/,/g, ""))
+    if (!isFinite(amount)) return text
+    var fixed = amount.toFixed(2)
+    // Two decimals would round a small non-zero amount to "0.00", which reads
+    // as nothing at all. Keep that one's own precision instead.
+    if (amount !== 0 && Number(fixed) === 0) fixed = trimTrailingZeros(currency[2].replace(/,/g, ""))
+    return groupThousands(fixed) + " " + currency[1].toUpperCase()
+  }
+
+  // qalc spells fluid ounces with an underscore; nothing else in its output
+  // uses one, so this is safe to spell the way people write it.
+  text = text.replace(/\bfl_oz\b/g, "fl oz")
+
+  // Everything else keeps its own shape — units, ratios, times, mixed units
+  // like "154 lb + 5.18 oz", and anything qalc could not evaluate — with every
+  // number in it tidied.
+  // A comma counts as a thousands separator only when three digits follow it,
+  // so a comma between arguments — "rem(25, 1 B)" — is left where it is.
+  return text.replace(/[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?/g, function(number) { return tidyNumber(number) })
+}
+
+// The expression shown beside the answer. Currency codes are uppercased only
+// when the answer is a currency, so function names like sin, cos, and log are
+// never touched.
+function calculationExpression(query, currency) {
+  var text = String(query || "").trim().replace(/\s+/g, " ")
+  if (!text || !currency) return text
+  return text.replace(/\b([A-Za-z]{3})\b/g, function(match) { return match.toUpperCase() })
+}
+
 function displayRow(items, itemOrder, checkedResults, entry, detail, score, section, metadata) {
   var target = entry.kind === "link" ? entry.target : entry.id
   return {
@@ -1805,9 +1976,10 @@ function displayRow(items, itemOrder, checkedResults, entry, detail, score, sect
     score: score || 0,
     section: section || "",
     starred: false,
-    // Every row carries the role so the ListModel's role set stays uniform
+    // Every row carries these roles so the ListModel's role set stays uniform
     // regardless of which build path produced the row.
     disabled: false,
+    value: "",
     matchPriority: 0,
     usageCount: 0,
     lastUsedAt: 0
@@ -2069,6 +2241,14 @@ if (typeof module !== "undefined") {
     parseEmojiGroups: parseEmojiGroups,
     emojiGroupLabels: emojiGroupLabels,
     emojiSections: emojiSections,
+    groupThousands: groupThousands,
+    trimTrailingZeros: trimTrailingZeros,
+    tidyNumber: tidyNumber,
+    isCurrencyResult: isCurrencyResult,
+    implicitConversionTarget: implicitConversionTarget,
+    normalizeCalculationQuery: normalizeCalculationQuery,
+    formatCalculationValue: formatCalculationValue,
+    calculationExpression: calculationExpression,
     displayRow: displayRow,
     actionBarHints: actionBarHints,
     compactActionBarHints: compactActionBarHints
