@@ -856,6 +856,26 @@ function workflowClosesOnDispatch(node, command) {
   return executable === "xdg-terminal-exec" || executable === "omarchy-launch-terminal"
 }
 
+// Where a definition came from, ranked by how specific it is to this machine.
+// Resolution uses the rank to break a tie between two providers of the same
+// capability at equal priority: the user's own file is the most specific thing
+// present, then an installed plugin, then whatever Omalaunch ships. Without a
+// rank the winner would depend on catalog order, which is not something a user
+// can see or control.
+function extensionOrigin(raw) {
+  var origin = String(raw && raw._origin || "")
+  if (origin === "user" || origin === "plugin" || origin === "bundled") return origin
+  // Older catalogs only carried the bundled flag.
+  return raw && raw._bundled === true ? "bundled" : "plugin"
+}
+
+function extensionOriginRank(extension) {
+  if (!extension) return -1
+  if (extension.origin === "user") return 2
+  if (extension.origin === "plugin") return 1
+  return 0
+}
+
 function normalizeExtension(raw) {
   if (!raw || typeof raw !== "object" || raw.schemaVersion !== 1) return null
 
@@ -881,6 +901,7 @@ function normalizeExtension(raw) {
     command: command,
     priority: priority,
     bundled: raw._bundled === true,
+    origin: extensionOrigin(raw),
     sourceDir: String(raw._sourceDir || ""),
     source: String(raw._source || ""),
     requires: stringArray(raw.requires),
@@ -1055,7 +1076,7 @@ function resolveExtensions(extensions, providerPreferences, diagnostics, diagnos
         || (extension.available && !current.available)
         || (extension.available === current.available && extension.priority > current.priority)
         || (extension.available === current.available && extension.priority === current.priority
-          && current.bundled && !extension.bundled))
+          && extensionOriginRank(extension) > extensionOriginRank(current)))
       selected[key] = extension
   }
   for (var capability in preferences) {
@@ -1069,6 +1090,18 @@ function resolveExtensions(extensions, providerPreferences, diagnostics, diagnos
       "Configured provider '" + requested + "' for capability '" + capability + "' is "
         + (found ? "unavailable" : "missing") + "; normal provider resolution was used", diagnosticState)
   }
+  // Shadowing is legitimate — it is why the rank exists — but silent shadowing
+  // is a bug nobody can find. A user file left behind after the plugin it was
+  // overriding got installed looks exactly like the plugin not working.
+  for (var shadowIndex = 0; shadowIndex < values.length; shadowIndex++) {
+    var candidate = values[shadowIndex]
+    var winner = selected[lookupKey(candidate.capability)]
+    if (!winner || winner === candidate || winner.origin !== "user") continue
+    appendExtensionDiagnostic(diagnostics,
+      "Capability '" + candidate.capability + "' is provided by your own extension '" + winner.id
+        + "'; '" + candidate.id + "' was not used", diagnosticState)
+  }
+
   var result = []
   for (var orderIndex = 0; orderIndex < order.length; orderIndex++) result.push(selected[order[orderIndex]])
   return result
@@ -2432,6 +2465,7 @@ if (typeof module !== "undefined") {
     extensionRootInput: extensionRootInput,
     focusedExtensionQuery: focusedExtensionQuery,
     focusedPrefixMatch: focusedPrefixMatch,
+    extensionOriginRank: extensionOriginRank,
     normalizeExtension: normalizeExtension,
     resolveExtensions: resolveExtensions,
     disabledCapabilitySet: disabledCapabilitySet,

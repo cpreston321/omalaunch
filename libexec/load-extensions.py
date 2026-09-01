@@ -108,7 +108,7 @@ class CatalogBuilder:
                 self.diagnostics[-1] = notice[:self.limits.diagnostic_chars]
             self.diagnostic_limit_reported = True
 
-    def append(self, raw: Any, *, bundled: bool, source_dir: Path, source: str) -> None:
+    def append(self, raw: Any, *, origin: str, source_dir: Path, source: str) -> None:
         values = raw if isinstance(raw, list) else [raw]
         if len(values) > self.limits.definitions_per_source:
             self.diagnostic(
@@ -125,7 +125,7 @@ class CatalogBuilder:
                 return
             try:
                 validate_json_depth(value, self.limits.json_nesting_depth)
-                annotated = annotate(value, bundled=bundled, source_dir=source_dir, source=source)
+                annotated = annotate(value, origin=origin, source_dir=source_dir, source=source)
                 validate_json_depth(annotated, self.limits.json_nesting_depth)
                 encoded_size = len(self.encoded(annotated)) + (1 if self.catalog else 0)
             except (RecursionError, ValueError) as error:
@@ -403,9 +403,20 @@ def read_json(path: Path, *, size_limit: int | None = None,
         raise ValueError("JSON file handling exceeded Python's recursion limit") from error
 
 
-def annotate(raw: Any, *, bundled: bool, source_dir: Path, source: str) -> Any:
+# Where a definition came from, in increasing order of specificity. Resolution
+# uses this to break a tie between two providers of one capability: the user's
+# own file is the most specific thing on the machine, then an installed
+# plugin, then whatever Omalaunch ships. `_bundled` is kept alongside it
+# because the rest of the catalog contract still speaks in that flag.
+ORIGIN_BUNDLED = "bundled"
+ORIGIN_PLUGIN = "plugin"
+ORIGIN_USER = "user"
+
+
+def annotate(raw: Any, *, origin: str, source_dir: Path, source: str) -> Any:
     value = dict(raw) if isinstance(raw, dict) else {"_invalidDefinition": raw}
-    value["_bundled"] = bundled
+    value["_origin"] = origin
+    value["_bundled"] = origin == ORIGIN_BUNDLED
     value["_sourceDir"] = str(source_dir)
     value["_source"] = source
     requirements = value.get("requires", [])
@@ -448,6 +459,51 @@ def provider_failure(source: str, status: str, stderr: bytes, output_limit: int)
     detail = stderr.decode("utf-8", "replace").strip()[:DIAGNOSTIC_STDERR_BYTES]
     return f"Extension provider {source} {reason}" + (f": {detail}" if detail else "")
 
+
+def load_user_extensions(home: Path, load_static: Any, builder: CatalogBuilder, limits: Limits) -> None:
+    """Extension definitions the user dropped in, with no plugin around them.
+
+    Authoring a whole Omarchy plugin is proportionate for something the size of
+    a camera panel and absurd for a one-file prefix extension, so this root
+    accepts the same definitions directly. It is deliberately not the
+    `extensions/` directory beside it: that holds per-capability settings
+    files, and definitions sitting among them would be a confusing collision.
+
+    Two layouts, both mirroring how bundled extensions are laid out:
+      extensions.d/<name>/extension.json   with helper files beside it
+      extensions.d/<name>.json             when there are none
+
+    Discovery is bounded the same way plugin discovery is; a directory of
+    thousands of files must not turn a keystroke into a filesystem walk.
+    """
+    root = home / ".config" / "omarchy" / "omalaunch" / "extensions.d"
+    candidates: list[tuple[Path, Path]] = []
+    entries_seen = 0
+    try:
+        with os.scandir(root) as entries:
+            for entry in entries:
+                entries_seen += 1
+                if entries_seen > limits.manifest_filesystem_entries:
+                    builder.diagnostic(
+                        f"Stopped reading {root} after {limits.manifest_filesystem_entries} entries"
+                    )
+                    break
+                path = Path(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    definition = path / "extension.json"
+                    if definition.is_file():
+                        candidates.append((definition, path))
+                elif entry.is_file(follow_symlinks=False) and path.suffix == ".json":
+                    candidates.append((path, root))
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        builder.diagnostic(f"Could not read {root}: {error}")
+        return
+
+    for definition, source_dir in sorted(candidates):
+        load_static(definition, origin=ORIGIN_USER, source_dir=source_dir,
+                    source=f"user file {definition}")
 
 def load_user_configuration(home: Path, builder: CatalogBuilder, limits: Limits) -> None:
     config_root = home / ".config" / "omarchy" / "omalaunch"
@@ -544,7 +600,7 @@ def load_catalog(plugin_path: Path, omarchy_path: Path, home: Path, limits: Limi
     builder = CatalogBuilder(limits)
     static_bytes = 0
 
-    def load_static(extension_file: Path, *, bundled: bool, source_dir: Path, source: str) -> None:
+    def load_static(extension_file: Path, *, origin: str, source_dir: Path, source: str) -> None:
         nonlocal static_bytes
         try:
             size = extension_file.stat().st_size
@@ -559,12 +615,12 @@ def load_catalog(plugin_path: Path, omarchy_path: Path, home: Path, limits: Limi
         static_bytes += size
         try:
             builder.append(read_json(extension_file, maximum_depth=limits.json_nesting_depth),
-                           bundled=bundled, source_dir=source_dir, source=source)
+                           origin=origin, source_dir=source_dir, source=source)
         except (OSError, RecursionError, ValueError, UnicodeDecodeError) as error:
             builder.diagnostic(f"Could not load {source}: {error}")
 
     for extension_file in sorted(plugin_path.glob("extensions/*/extension.json")):
-        load_static(extension_file, bundled=True, source_dir=extension_file.parent,
+        load_static(extension_file, origin=ORIGIN_BUNDLED, source_dir=extension_file.parent,
                     source=f"bundled file {extension_file}")
 
     enabled, enabled_diagnostics, complete = enabled_plugin_ids(
@@ -685,7 +741,7 @@ def load_catalog(plugin_path: Path, omarchy_path: Path, home: Path, limits: Limi
             if extension_file is None:
                 builder.diagnostic(f"Plugin {plugin_id} extension path is missing or unsafe: {entry!r}")
                 continue
-            load_static(extension_file, bundled=False, source_dir=extension_file.parent,
+            load_static(extension_file, origin=ORIGIN_PLUGIN, source_dir=extension_file.parent,
                         source=f"plugin {plugin_id} file {entry}")
 
         providers = omalaunch.get("extensionProviders", [])
@@ -738,8 +794,9 @@ def load_catalog(plugin_path: Path, omarchy_path: Path, home: Path, limits: Limi
             if not isinstance(definitions, (dict, list)):
                 builder.diagnostic(f"Extension provider {source} must emit one extension object or an array of extension objects")
                 continue
-            builder.append(definitions, bundled=False, source_dir=plugin_dir, source=source)
+            builder.append(definitions, origin=ORIGIN_PLUGIN, source_dir=plugin_dir, source=source)
 
+    load_user_extensions(home, load_static, builder, limits)
     load_user_configuration(home, builder, limits)
     return builder.finish(complete=complete)
 

@@ -66,6 +66,68 @@ Develop every external extension in its own source repository. Do not develop in
 
 The extension directory repository lists available extensions; it does not contain their source code. One plugin repository can provide several extension definitions, but each definition provides one capability and has its own stable extension `id`.
 
+## Your own extensions
+
+Authoring an Omarchy plugin is proportionate for something the size of a camera
+panel and absurd for a one-file prefix extension. Definitions dropped into a
+user-owned root load with no plugin around them:
+
+```
+~/.config/omarchy/omalaunch/extensions.d/<name>/extension.json   with helper files beside it
+~/.config/omarchy/omalaunch/extensions.d/<name>.json             when there are none
+```
+
+Both layouts mirror how bundled extensions are laid out, and the format is the
+same schema-version-1 definition used everywhere else — the same validation,
+the same dependency checks, the same budgets, the same diagnostics. If you can
+write a bundled extension you can write one of these. `{extensionDir}` resolves
+to the definition's own directory, so a helper script lives beside the file
+that calls it:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "my.notes",
+  "capability": "notes",
+  "mode": "prefix",
+  "label": "Notes",
+  "prefixes": ["note"],
+  "command": ["{extensionDir}/bin/note", "{prompt}"]
+}
+```
+
+This is deliberately not the `extensions/` directory beside it: that holds
+per-capability settings files such as `files.jsonc`, and definitions sitting
+among them would be a confusing collision.
+
+Files that are not `.json` are ignored without comment; a `.json` file that
+does not parse is diagnosed by path and does not discard its valid neighbours.
+An absent `extensions.d` is the normal case and says nothing.
+
+### Which provider wins
+
+When more than one extension claims a capability, resolution is, in order:
+
+1. A capability disabled in configuration is dropped entirely.
+2. A provider named explicitly in `config.jsonc` `capabilities` wins.
+3. An available extension beats an unavailable one.
+4. A higher `priority` wins.
+5. Failing all that, the more specific source wins: **your own file, then an
+   installed plugin, then bundled.**
+
+Rule 5 is why the root exists — dropping in a definition for a capability
+Omalaunch already ships replaces it, and deleting the file restores the
+original. Because that shadowing is easy to forget, replacing a *plugin* this
+way is diagnosed by name, so a user file left behind after installing the
+plugin it was overriding does not read as the plugin being broken.
+
+### Trust
+
+Same boundary as a plugin, and worth being blunt about: a definition here runs
+arbitrary commands as you, with your environment and your files. The root
+lowers the effort of installing an extension, not the risk of one. Argument
+arrays prevent accidental shell-string injection; they are not a sandbox.
+
 ## Dynamic extension catalogs
 
 An enabled plugin may generate extension definitions when Omalaunch loads or refreshes its catalog:

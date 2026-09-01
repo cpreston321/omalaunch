@@ -1261,3 +1261,58 @@ const missingProviderCatalog = menu.parseExtensionCatalog(JSON.stringify({
 }))
 assert(missingProviderCatalog.extensions[0].id === 'fallback' && missingProviderCatalog.diagnostics.some(value => value.indexOf("is missing; normal provider resolution was used") >= 0),
   'a missing configured provider falls back with a diagnostic')
+
+// --- source rank -----------------------------------------------------------
+//
+// Two providers of one capability at equal priority are resolved by how
+// specific their source is to this machine. Without a rank the winner would
+// depend on catalog order, which a user can neither see nor control.
+function rankedExtension(id, origin, priority) {
+  return menu.normalizeExtension({
+    schemaVersion: 1, id: id, capability: 'files', label: id, mode: 'prefix',
+    prefixes: [id], command: ['true'], priority: priority || 0, _origin: origin,
+  })
+}
+
+function resolvedIds(extensions, diagnostics) {
+  return menu.resolveExtensions(extensions, {}, diagnostics || [], { count: 0 }, [])
+    .map(function (extension) { return extension.id })
+}
+
+const userExt = rankedExtension('user', 'user')
+const pluginExt = rankedExtension('plugin', 'plugin')
+const bundledExt = rankedExtension('bundled', 'bundled')
+
+assert(resolvedIds([pluginExt, userExt])[0] === 'user',
+  'a user extension wins over a plugin at equal priority')
+assert(resolvedIds([userExt, pluginExt])[0] === 'user',
+  'the winner does not depend on catalog order')
+assert(resolvedIds([bundledExt, pluginExt])[0] === 'plugin',
+  'a plugin still wins over a bundled extension')
+assert(resolvedIds([bundledExt, userExt])[0] === 'user',
+  'a user extension wins over a bundled one')
+assert(resolvedIds([rankedExtension('user', 'user', 0), rankedExtension('plugin', 'plugin', 10)])[0] === 'plugin',
+  'an explicit priority still outranks the source')
+assert(menu.resolveExtensions([pluginExt, userExt], { files: 'plugin' }, [], { count: 0 }, [])[0].id === 'plugin',
+  'a configured provider still overrides the source rank')
+
+// Shadowing is legitimate, but silent shadowing is a bug nobody can find: a
+// user file left behind looks exactly like the plugin not working.
+const shadowDiagnostics = []
+resolvedIds([pluginExt, userExt], shadowDiagnostics)
+assert(shadowDiagnostics.some(function (message) {
+  return message.indexOf('your own extension') >= 0 && message.indexOf('plugin') >= 0
+}), 'shadowing a plugin with a user extension is diagnosed')
+
+const quietDiagnostics = []
+resolvedIds([bundledExt, pluginExt], quietDiagnostics)
+assert(quietDiagnostics.length === 0,
+  'ordinary bundled-to-plugin replacement stays quiet')
+
+// A catalog written before origins existed must still resolve.
+const legacyBundled = menu.normalizeExtension({
+  schemaVersion: 1, id: 'legacy', capability: 'files', label: 'legacy', mode: 'prefix',
+  prefixes: ['legacy'], command: ['true'], _bundled: true,
+})
+assert(legacyBundled.origin === 'bundled' && menu.extensionOriginRank(legacyBundled) === 0,
+  'a definition carrying only the bundled flag is ranked as bundled')

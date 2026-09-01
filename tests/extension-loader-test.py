@@ -538,3 +538,50 @@ elif mode == 'integer-overflow':
           and "external extensions were skipped" in "\n".join(missing_list["diagnostics"])
           and missing_list["complete"] is False,
           "plugin-list failure preserves bundled extensions and marks the catalog transient")
+
+    # ---------------------------------------------------- user extensions.d
+    #
+    # Definitions the user dropped in without authoring a plugin around them.
+    # Both layouts mirror how bundled extensions are laid out.
+    user_root = home / ".config" / "omarchy" / "omalaunch" / "extensions.d"
+    nested = user_root / "notes"
+    nested.mkdir(parents=True)
+    nested.joinpath("extension.json").write_text(json.dumps({
+        "schemaVersion": 1, "id": "user.notes", "capability": "notes", "label": "Notes",
+        "prefixes": ["note"], "command": ["{extensionDir}/note", "{prompt}"],
+    }), encoding="utf-8")
+    user_root.joinpath("flat.json").write_text(json.dumps({
+        "schemaVersion": 1, "id": "user.flat", "capability": "flat", "label": "Flat",
+        "prefixes": ["flat"], "command": ["printf", "%s", "{prompt}"],
+    }), encoding="utf-8")
+
+    user_catalog = run_loader(plugin_root, omarchy_root, home, env)
+    by_id = {item.get("id"): item for item in user_catalog["extensions"]}
+    check("user.notes" in by_id and "user.flat" in by_id,
+          "both user extension layouts load without a plugin")
+    check(by_id["user.notes"]["_origin"] == "user" and by_id["user.flat"]["_origin"] == "user",
+          "user definitions are marked with the user origin")
+    check(by_id["user.notes"]["_bundled"] is False,
+          "user definitions are not bundled")
+    # A helper script has to resolve beside its definition, which only works if
+    # the directory layout reports the directory rather than the root.
+    check(by_id["user.notes"]["_sourceDir"] == str(nested)
+          and by_id["user.flat"]["_sourceDir"] == str(user_root),
+          "extensionDir points at the definition's own directory")
+
+    user_root.joinpath("notes.txt").write_text("not a definition", encoding="utf-8")
+    user_root.joinpath("broken.json").write_text("{ not json", encoding="utf-8")
+    mixed_catalog = run_loader(plugin_root, omarchy_root, home, env)
+    mixed_ids = [item.get("id") for item in mixed_catalog["extensions"]]
+    check("user.flat" in mixed_ids and "user.notes" in mixed_ids,
+          "an unreadable neighbour does not discard valid user extensions")
+    check(any("broken.json" in message for message in mixed_catalog["diagnostics"]),
+          "an unparseable user definition is diagnosed by path")
+    check(not any("notes.txt" in message for message in mixed_catalog["diagnostics"]),
+          "a non-JSON file in the directory is ignored silently")
+
+    shutil.rmtree(user_root)
+    absent_catalog = run_loader(plugin_root, omarchy_root, home, env)
+    check(not any(item.get("_origin") == "user" for item in absent_catalog["extensions"])
+          and not any("extensions.d" in message for message in absent_catalog["diagnostics"]),
+          "no extensions.d directory is the normal case, not a diagnostic")
