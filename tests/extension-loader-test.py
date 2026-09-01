@@ -585,3 +585,55 @@ elif mode == 'integer-overflow':
     check(not any(item.get("_origin") == "user" for item in absent_catalog["extensions"])
           and not any("extensions.d" in message for message in absent_catalog["diagnostics"]),
           "no extensions.d directory is the normal case, not a diagnostic")
+
+    # ------------------------------------------------ user extension providers
+    #
+    # A directory may generate its definitions instead of declaring them. The
+    # executable is the declaration: there is no manifest here to name one in.
+    gen = user_root / "generated"
+    gen.mkdir(parents=True)
+    # An earlier case removed the whole root; a static neighbour is needed to
+    # show that one failing provider does not take the rest down with it.
+    user_root.joinpath("flat.json").write_text(json.dumps({
+        "schemaVersion": 1, "id": "user.flat", "capability": "flat", "label": "Flat",
+        "prefixes": ["flat"], "command": ["printf", "%s", "{prompt}"],
+    }), encoding="utf-8")
+    write_executable(gen / "provider", """#!/usr/bin/env python3
+import json
+print(json.dumps([{'schemaVersion': 1, 'id': 'user.generated', 'capability': 'generated',
+                   'label': 'Generated', 'prefixes': ['gen'], 'command': ['true', '{prompt}']}]))
+""")
+    generated = run_loader(plugin_root, omarchy_root, home, env)
+    generated_by_id = {item.get("id"): item for item in generated["extensions"]}
+    check("user.generated" in generated_by_id,
+          "an executable provider in extensions.d generates definitions")
+    check(generated_by_id["user.generated"]["_origin"] == "user",
+          "generated user definitions carry the user origin")
+    check(generated_by_id["user.generated"]["_sourceDir"] == str(gen),
+          "a generated definition's extensionDir is its own directory")
+
+    # Copying a directory out of a repository or an archive is exactly how the
+    # executable bit gets lost, so it must not fail silently.
+    (gen / "provider").chmod(0o644)
+    unexecutable = run_loader(plugin_root, omarchy_root, home, env)
+    check(not any(item.get("id") == "user.generated" for item in unexecutable["extensions"]),
+          "a provider without its executable bit does not run")
+    check(any("not executable" in message and "provider" in message
+              for message in unexecutable["diagnostics"]),
+          "a provider that cannot be executed says so by name")
+    (gen / "provider").chmod(0o755)
+
+    # Plugins and user directories draw from one pool: a second allowance would
+    # quietly double what a keystroke can wait for.
+    shared = run_loader(plugin_root, omarchy_root, home, env,
+                        extra_args=["--max-total-providers", "0"])
+    check(not any(item.get("id") == "user.generated" for item in shared["extensions"]),
+          "user providers respect the shared total-provider limit")
+
+    write_executable(gen / "provider", "#!/bin/sh\nprintf 'not json'\n")
+    invalid = run_loader(plugin_root, omarchy_root, home, env)
+    check(any("user provider" in message and "invalid JSON" in message
+              for message in invalid["diagnostics"]),
+          "a provider emitting garbage is diagnosed by path")
+    check(any(item.get("id") == "user.flat" for item in invalid["extensions"]),
+          "one broken provider does not discard static user extensions")

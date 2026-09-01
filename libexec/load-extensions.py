@@ -246,6 +246,65 @@ def safe_plugin_file(plugin_dir: Path, relative: Any) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+@dataclass
+class ProviderBudget:
+    """Provider allowances, shared by every source that can run one.
+
+    Plugins and user directories draw from the same pool deliberately: the
+    documented ceilings are per catalog load, so letting a second source open
+    its own allowance would quietly double what a keystroke can wait for.
+    """
+
+    total: int = 0
+    runtime: float = 0.0
+    limit_reported: bool = False
+    deadline_reported: bool = False
+
+
+def run_extension_provider(raw_command: Any, *, working_dir: Path, source: str, origin: str,
+                           budget: ProviderBudget, builder: CatalogBuilder, limits: Limits) -> None:
+    if budget.total >= limits.total_providers:
+        if not budget.limit_reported:
+            builder.diagnostic(
+                f"Total extension provider limit ({limits.total_providers}) reached; remaining providers were skipped"
+            )
+            budget.limit_reported = True
+        return
+    budget.total += 1
+    remaining_runtime = limits.aggregate_provider_seconds - budget.runtime
+    if remaining_runtime <= 0:
+        if not budget.deadline_reported:
+            builder.diagnostic(
+                f"Aggregate extension provider runtime limit ({limits.aggregate_provider_seconds:g} seconds) reached; remaining providers were skipped"
+            )
+            budget.deadline_reported = True
+        return
+    command, command_error = command_for_provider(working_dir, raw_command)
+    if command_error:
+        builder.diagnostic(f"Extension provider {source} {command_error}")
+        return
+    assert command is not None
+    started = time.monotonic()
+    status, stdout, stderr = run_bounded(
+        command, cwd=working_dir,
+        timeout=max(0.01, min(limits.provider_timeout, remaining_runtime)),
+        limit=limits.provider_output_bytes,
+    )
+    budget.runtime += time.monotonic() - started
+    if status != "ok":
+        builder.diagnostic(provider_failure(source, status, stderr, limits.provider_output_bytes))
+        return
+    try:
+        definitions = parse_json(stdout, maximum_depth=limits.json_nesting_depth)
+    except (RecursionError, ValueError, UnicodeDecodeError) as error:
+        builder.diagnostic(f"Extension provider {source} emitted invalid JSON: {error}")
+        return
+    if not isinstance(definitions, (dict, list)):
+        builder.diagnostic(f"Extension provider {source} must emit one extension object or an array of extension objects")
+        return
+    builder.append(definitions, origin=origin, source_dir=working_dir, source=source)
+
+
 def command_for_provider(plugin_dir: Path, raw: Any) -> tuple[list[str] | None, str | None]:
     if not isinstance(raw, list) or not raw or not all(isinstance(item, str) and item for item in raw):
         return None, "must be a non-empty array of non-empty strings"
@@ -460,7 +519,8 @@ def provider_failure(source: str, status: str, stderr: bytes, output_limit: int)
     return f"Extension provider {source} {reason}" + (f": {detail}" if detail else "")
 
 
-def load_user_extensions(home: Path, load_static: Any, builder: CatalogBuilder, limits: Limits) -> None:
+def load_user_extensions(home: Path, load_static: Any, builder: CatalogBuilder, limits: Limits,
+                         budget: ProviderBudget) -> None:
     """Extension definitions the user dropped in, with no plugin around them.
 
     Authoring a whole Omarchy plugin is proportionate for something the size of
@@ -473,11 +533,19 @@ def load_user_extensions(home: Path, load_static: Any, builder: CatalogBuilder, 
       extensions.d/<name>/extension.json   with helper files beside it
       extensions.d/<name>.json             when there are none
 
+    A directory may also hold an executable named `provider`, run to generate
+    definitions the way a plugin's extensionProviders entries are. There is no
+    manifest here to declare one in, and inventing a second file format for a
+    root whose whole point is removing ceremony would defeat it — so the
+    executable is the declaration, as it is in any conf.d. It draws from the
+    same provider budget plugins do.
+
     Discovery is bounded the same way plugin discovery is; a directory of
     thousands of files must not turn a keystroke into a filesystem walk.
     """
     root = home / ".config" / "omarchy" / "omalaunch" / "extensions.d"
     candidates: list[tuple[Path, Path]] = []
+    providers: list[Path] = []
     entries_seen = 0
     try:
         with os.scandir(root) as entries:
@@ -493,6 +561,9 @@ def load_user_extensions(home: Path, load_static: Any, builder: CatalogBuilder, 
                     definition = path / "extension.json"
                     if definition.is_file():
                         candidates.append((definition, path))
+                    provider = path / "provider"
+                    if provider.exists():
+                        providers.append(provider)
                 elif entry.is_file(follow_symlinks=False) and path.suffix == ".json":
                     candidates.append((path, root))
     except FileNotFoundError:
@@ -504,6 +575,16 @@ def load_user_extensions(home: Path, load_static: Any, builder: CatalogBuilder, 
     for definition, source_dir in sorted(candidates):
         load_static(definition, origin=ORIGIN_USER, source_dir=source_dir,
                     source=f"user file {definition}")
+
+    for provider in sorted(providers):
+        # command_for_provider reports a missing executable bit by name, which
+        # is the failure to expect: copying a directory out of a repository or
+        # an archive is exactly how that bit gets lost.
+        run_extension_provider(
+            ["./provider"], working_dir=provider.parent,
+            source=f"user provider {provider}",
+            origin=ORIGIN_USER, budget=budget, builder=builder, limits=limits,
+        )
 
 def load_user_configuration(home: Path, builder: CatalogBuilder, limits: Limits) -> None:
     config_root = home / ".config" / "omarchy" / "omalaunch"
@@ -629,10 +710,7 @@ def load_catalog(plugin_path: Path, omarchy_path: Path, home: Path, limits: Limi
     for message in enabled_diagnostics:
         builder.diagnostic(message)
     manifest_roots = (omarchy_path / "shell" / "plugins", home / ".config" / "omarchy" / "plugins")
-    total_providers = 0
-    provider_runtime = 0.0
-    provider_deadline_reported = False
-    total_provider_limit_reported = False
+    provider_budget = ProviderBudget()
 
     # Root order is the explicit precedence: the Omarchy-managed shell root
     # wins over the user plugin root, and lexical path order breaks ties inside
@@ -754,49 +832,13 @@ def load_catalog(plugin_path: Path, omarchy_path: Path, home: Path, limits: Limi
                 f"{limits.providers_per_plugin} were considered"
             )
         for index, raw_command in enumerate(providers[:limits.providers_per_plugin]):
-            source = f"plugin {plugin_id} provider #{index + 1}"
-            if total_providers >= limits.total_providers:
-                if not total_provider_limit_reported:
-                    builder.diagnostic(
-                        f"Total extension provider limit ({limits.total_providers}) reached; remaining providers were skipped"
-                    )
-                    total_provider_limit_reported = True
-                continue
-            total_providers += 1
-            remaining_runtime = limits.aggregate_provider_seconds - provider_runtime
-            if remaining_runtime <= 0:
-                if not provider_deadline_reported:
-                    builder.diagnostic(
-                        f"Aggregate extension provider runtime limit ({limits.aggregate_provider_seconds:g} seconds) reached; remaining providers were skipped"
-                    )
-                    provider_deadline_reported = True
-                continue
-            command, command_error = command_for_provider(plugin_dir, raw_command)
-            if command_error:
-                builder.diagnostic(f"Extension provider {source} {command_error}")
-                continue
-            assert command is not None
-            started = time.monotonic()
-            status, stdout, stderr = run_bounded(
-                command, cwd=plugin_dir,
-                timeout=max(0.01, min(limits.provider_timeout, remaining_runtime)),
-                limit=limits.provider_output_bytes,
+            run_extension_provider(
+                raw_command, working_dir=plugin_dir,
+                source=f"plugin {plugin_id} provider #{index + 1}",
+                origin=ORIGIN_PLUGIN, budget=provider_budget, builder=builder, limits=limits,
             )
-            provider_runtime += time.monotonic() - started
-            if status != "ok":
-                builder.diagnostic(provider_failure(source, status, stderr, limits.provider_output_bytes))
-                continue
-            try:
-                definitions = parse_json(stdout, maximum_depth=limits.json_nesting_depth)
-            except (RecursionError, ValueError, UnicodeDecodeError) as error:
-                builder.diagnostic(f"Extension provider {source} emitted invalid JSON: {error}")
-                continue
-            if not isinstance(definitions, (dict, list)):
-                builder.diagnostic(f"Extension provider {source} must emit one extension object or an array of extension objects")
-                continue
-            builder.append(definitions, origin=ORIGIN_PLUGIN, source_dir=plugin_dir, source=source)
 
-    load_user_extensions(home, load_static, builder, limits)
+    load_user_extensions(home, load_static, builder, limits, provider_budget)
     load_user_configuration(home, builder, limits)
     return builder.finish(complete=complete)
 

@@ -96,6 +96,24 @@ that calls it:
 }
 ```
 
+A directory may generate its definitions instead of declaring them. An
+executable named `provider` is run, and its stdout is read exactly as a
+plugin's `extensionProviders` output is — one extension object or an array of
+them:
+
+```
+~/.config/omarchy/omalaunch/extensions.d/<name>/provider
+```
+
+There is no manifest here to declare a provider in, and inventing a second file
+format for a root whose whole point is removing ceremony would defeat it, so
+the executable is the declaration — as it is in any `conf.d`. It runs with its
+own directory as the working directory and draws from the **same provider
+budget as plugins**: the documented ceilings are per catalog load, so a second
+source does not get a second allowance. A `provider` file that has lost its
+executable bit — which is what copying a directory out of an archive does — is
+diagnosed by name rather than skipped silently.
+
 This is deliberately not the `extensions/` directory beside it: that holds
 per-capability settings files such as `files.jsonc`, and definitions sitting
 among them would be a confusing collision.
