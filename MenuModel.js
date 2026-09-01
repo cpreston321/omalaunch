@@ -1813,6 +1813,47 @@ var TEMPERATURE_UNITS = {
 
 var TEMPERATURE_CONVERSION = /^([\s\S]*?)([A-Za-z°]+)\s+(to|in)\s+([A-Za-z°]+)\s*$/i
 
+// A bare amount and unit is a conversion request with the obvious counterpart
+// left unsaid: "1 inch" means centimetres, "80 kg" means pounds. Each entry
+// crosses the metric/imperial line, which is the only reading that makes a
+// lone unit worth converting at all.
+//
+// Deliberately absent: a bare c, f, k, or s. They are ambiguous even in a
+// conversion, and a launcher query like "4k" or "5g" must stay a search.
+var IMPLICIT_TARGETS = {
+  inch: "cm", inches: "cm", "in": "cm",
+  cm: "inch", mm: "inch", m: "ft", km: "mi",
+  mi: "km", mile: "km", miles: "km",
+  ft: "cm", foot: "cm", feet: "cm",
+  yd: "m", yard: "m", yards: "m",
+  lb: "kg", pound: "kg", pounds: "kg", kg: "lb",
+  oz: "g", ounce: "g", ounces: "g", g: "oz", gram: "oz", grams: "oz",
+  ton: "kg", tons: "kg",
+  l: "gal", liter: "gal", liters: "gal", litre: "gal", litres: "gal",
+  gal: "l", gallon: "l", gallons: "l",
+  ml: "floz", floz: "ml",
+  cup: "ml", cups: "ml", tsp: "ml", tbsp: "ml",
+  celsius: "fahrenheit", fahrenheit: "celsius",
+  mph: "km/h", "km/h": "mph"
+}
+
+var BARE_AMOUNT = /^([+-]?[0-9][0-9,]*(?:\.[0-9]+)?)(\s*)([A-Za-z°]+(?:\/[A-Za-z]+)?)$/
+
+// A trailing "to" or "in" with nothing after it is not a conversion — "2 in"
+// is two inches — so the keyword only counts when something follows it.
+function implicitConversionTarget(query) {
+  var text = String(query || "").trim()
+  if (/\b(to|in)\b\s*\S/i.test(text)) return ""
+  var parts = BARE_AMOUNT.exec(text)
+  if (!parts) return ""
+  var unit = parts[3].toLowerCase()
+  // A one-letter unit must be separated from the amount. Without this, "5g"
+  // and "4k" stop being searches and start being conversions.
+  if (unit.length === 1 && parts[2].length === 0) return ""
+  var target = IMPLICIT_TARGETS[unit]
+  return target && target !== unit ? target : ""
+}
+
 function normalizeCalculationQuery(query) {
   var text = String(query === undefined || query === null ? "" : query)
   if (!text.trim()) return text
@@ -1822,6 +1863,11 @@ function normalizeCalculationQuery(query) {
     var alias = UNIT_ALIASES[token.toLowerCase()]
     return alias === undefined ? token : alias
   })
+
+  // A lone amount and unit gains its implied counterpart before the
+  // temperature pass, so "100 celsius" becomes "100 °C to °F".
+  var implicit = implicitConversionTarget(text)
+  if (implicit) text = text.trim() + " to " + implicit
 
   // Temperature is rewritten only when both sides of the conversion are
   // temperatures. That is what makes a bare "c" safe to touch: on its own it
@@ -1888,6 +1934,10 @@ function formatCalculationValue(raw) {
     if (amount !== 0 && Number(fixed) === 0) fixed = trimTrailingZeros(currency[2].replace(/,/g, ""))
     return groupThousands(fixed) + " " + currency[1].toUpperCase()
   }
+
+  // qalc spells fluid ounces with an underscore; nothing else in its output
+  // uses one, so this is safe to spell the way people write it.
+  text = text.replace(/\bfl_oz\b/g, "fl oz")
 
   // Everything else keeps its own shape — units, ratios, times, mixed units
   // like "154 lb + 5.18 oz", and anything qalc could not evaluate — with every
@@ -2195,6 +2245,7 @@ if (typeof module !== "undefined") {
     trimTrailingZeros: trimTrailingZeros,
     tidyNumber: tidyNumber,
     isCurrencyResult: isCurrencyResult,
+    implicitConversionTarget: implicitConversionTarget,
     normalizeCalculationQuery: normalizeCalculationQuery,
     formatCalculationValue: formatCalculationValue,
     calculationExpression: calculationExpression,

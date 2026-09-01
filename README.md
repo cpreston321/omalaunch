@@ -73,6 +73,20 @@ Everyday spellings work, not just the ones `qalc` accepts. `qalc` reads an abbre
 
 `ms`, `ns`, and `ps` are left alone, being real units, and a bare `c`, `f`, or `k` is only read as a temperature when both sides of the conversion are — so `500 ms to s` and `3 c to m` mean what they say.
 
+An amount and a unit on their own convert to the obvious counterpart, so you rarely need to type the target:
+
+| you type | you get |
+| --- | --- |
+| `1 inch` or `1inch` | `2.54 cm` |
+| `80 kg` | `176.37 lb` |
+| `5 km` | `3.11 mi` |
+| `6 ft` | `182.88 cm` |
+| `2 cups` | `480 mL` |
+| `100 celsius` | `212 °F` |
+| `60 mph` | `96.56 km/h` |
+
+Naming a target always wins, so `1 inch to mm` converts to millimetres. A one-letter unit has to be separated from the amount — `500 g` converts, `5g` stays a search — which is what keeps `4k`, `1080p`, and `1password` out of the calculator.
+
 ![Calculator result in Omalaunch](assets/calculator.png)
 
 ## Currency conversion

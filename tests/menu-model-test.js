@@ -725,6 +725,43 @@ assert(menu.normalizeCalculationQuery('3 c to m') === '3 c to m'
 assert(menu.normalizeCalculationQuery('') === '' && menu.normalizeCalculationQuery(null) === '',
   'an empty query normalises to nothing')
 
+// ---- a lone amount and unit implies its counterpart ----
+
+assert(menu.implicitConversionTarget('1 inch') === 'cm'
+  && menu.implicitConversionTarget('80 kg') === 'lb'
+  && menu.implicitConversionTarget('5 km') === 'mi'
+  && menu.implicitConversionTarget('60 mph') === 'km/h',
+  'a lone amount and unit resolves to its cross-system counterpart')
+assert(menu.implicitConversionTarget('1inch') === 'cm',
+  'a multi-letter unit needs no space before it')
+assert(menu.implicitConversionTarget('5g') === '' && menu.implicitConversionTarget('2l') === ''
+  && menu.implicitConversionTarget('5m') === '',
+  'a one-letter unit must be separated from the amount, so 5g and 4k stay searches')
+assert(menu.implicitConversionTarget('500 g') === 'oz' && menu.implicitConversionTarget('2 l') === 'gal'
+  && menu.implicitConversionTarget('5 m') === 'ft',
+  'a one-letter unit still converts when it is separated')
+assert(menu.implicitConversionTarget('4k') === '' && menu.implicitConversionTarget('1080p') === ''
+  && menu.implicitConversionTarget('1password') === '' && menu.implicitConversionTarget('2fa') === '',
+  'a query that only looks like an amount and unit is left alone')
+assert(menu.implicitConversionTarget('1 inch to mm') === ''
+  && menu.implicitConversionTarget('5 km to m') === '',
+  'a stated target is never replaced by the implied one')
+assert(menu.implicitConversionTarget('2 in') === 'cm',
+  'a trailing conversion keyword with nothing after it is a unit, not a conversion')
+assert(menu.implicitConversionTarget('2 in 1') === '',
+  'a keyword with something after it is a conversion, so no target is implied')
+assert(menu.implicitConversionTarget('25 * 4') === '' && menu.implicitConversionTarget('') === '',
+  'arithmetic and empty input imply nothing')
+
+assert(menu.normalizeCalculationQuery('1 inch') === '1 inch to cm'
+  && menu.normalizeCalculationQuery('100 celsius') === '100 \u00b0C to \u00b0F',
+  'the implied target is appended before temperature is rewritten')
+assert(menu.normalizeCalculationQuery('180 lbs') === '180 lb to kg',
+  'an alias is resolved before its counterpart is looked up')
+
+assert(menu.formatCalculationValue('16.90701135 fl_oz') === '16.91 fl oz',
+  'fluid ounces are spelled the way people write them')
+
 const unitExtensions = menu.parseExtensions(JSON.stringify([{
   schemaVersion: 1, id: 'calc', mode: 'query', label: 'Calc',
   match: { all: ['\\d'] }, normalizeUnits: true, command: ['true']

@@ -324,6 +324,14 @@ sides of the conversion are temperatures — so `500 ms to s` and `3 c to m` are
 left alone. The flag defaults to false, so a third-party query provider is
 never rewritten.
 
+The same flag gives a lone amount and unit its implied counterpart: `1 inch`
+becomes `1 inch to cm`, `80 kg` becomes `80 kg to lb`. Each pair crosses the
+metric/imperial line, which is the only reading that makes a lone unit worth
+converting. A stated target always wins. A one-letter unit must be separated
+from the amount — `500 g` converts, `5g` does not — which is what keeps `4k`,
+`5g`, and `1080p` out of the calculator; the extension's `match` rules carry
+the same restriction so such a query never reaches it in the first place.
+
 Match rules are case-insensitive regular expressions:
 
 - Every expression in `all` must match.
