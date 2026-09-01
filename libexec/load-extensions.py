@@ -496,9 +496,30 @@ def load_user_configuration(home: Path, builder: CatalogBuilder, limits: Limits)
 
                 if normalized:
                     normalized_capabilities[capability] = normalized
+            launcher: dict[str, Any] = {}
+            raw_launcher = value.get("launcher")
+            if raw_launcher is not None:
+                if not isinstance(raw_launcher, dict):
+                    builder.diagnostic(f"Ignored non-object launcher settings in {main_path}")
+                else:
+                    # Bounded so a typo cannot produce a launcher larger than
+                    # any screen or too small to read.
+                    for key, low, high in (("width", 320, 2000), ("height", 240, 1600)):
+                        if key not in raw_launcher:
+                            continue
+                        size = raw_launcher[key]
+                        if isinstance(size, bool) or not isinstance(size, int):
+                            builder.diagnostic(f"Ignored non-integer launcher {key} in {main_path}")
+                        elif not low <= size <= high:
+                            builder.diagnostic(
+                                f"Ignored out-of-range launcher {key} {size} in {main_path}; expected {low}-{high}")
+                        else:
+                            launcher[key] = size
+
             builder.omalaunch_config = {
                 "version": 1,
                 "capabilities": normalized_capabilities,
+                "launcher": launcher,
             }
         except (OSError, UnicodeDecodeError, ValueError) as error:
             builder.diagnostic(f"Could not load configuration {main_path}: {error}")
