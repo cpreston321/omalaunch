@@ -12,6 +12,7 @@
     { "label": "Activities", "start": "🎃" },
     { "label": "Objects", "start": "👓" },
     { "label": "Symbols", "start": "🏧" },
-    { "label": "Flags", "start": "🏁" }
+    { "label": "Flags", "start": "🏁" },
+    { "label": "Currency", "start": "$" }
   ]
 }

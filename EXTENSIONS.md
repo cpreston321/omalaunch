@@ -188,6 +188,15 @@ also accepted. Duplicate glyphs, empty glyphs, non-objects, and malformed JSON
 are dropped, and the grid reads at most 8192 entries and displays at most 1000
 results.
 
+`extraData` names an optional supplementary set, resolved under the same rules
+as `data`, whose entries are **appended** to the dataset rather than replacing
+it. Because categories are derived by scanning the dataset in order, a set
+appended at the end becomes its own category with nothing more than one further
+boundary in the groups file. The bundled provider uses this for currency sign
+characters — `$`, `€`, `£`, `¥` and the rest — which the emoji set does not
+carry at all. A glyph the dataset already has is dropped from the supplement,
+so it never gets a second cell.
+
 `groups` names an optional category file and resolves under the same rules,
 including the candidate list. It
 lists the first emoji of each category, in the order the dataset uses:

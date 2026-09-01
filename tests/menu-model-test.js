@@ -920,6 +920,47 @@ const searchedEmojiRows = menu.emojiRows(emojiData, 'dolphin', {
 assert(searchedEmojiRows.length === 1 && searchedEmojiRows[0].emoji === '\u{1F42C}',
   'pins and history never promote an emoji that does not match the query')
 
+// ---- a supplementary glyph set ----
+
+const baseSet = menu.parseEmojiData(JSON.stringify([
+  { e: '\u{1F600}', k: 'grinning' }, { e: '\u{1F680}', k: 'rocket' }
+]))
+const extraSet = menu.parseEmojiData(JSON.stringify([
+  { e: '$', k: 'dollar sign usd' }, { e: '\u{20AC}', k: 'euro sign eur' },
+  { e: '\u{1F600}', k: 'duplicate grinning' }
+]))
+const combined = menu.concatEmojiData(baseSet, extraSet)
+assert(combined.length === 4, 'a supplementary set is appended, dropping glyphs the dataset already has')
+assert(combined[0].emoji === '\u{1F600}' && combined[2].emoji === '$',
+  'the dataset keeps its order and the supplement follows it')
+assert(menu.concatEmojiData(baseSet, []) === baseSet,
+  'an empty supplement returns the dataset untouched')
+assert(menu.concatEmojiData(null, extraSet).length === 3 && menu.concatEmojiData(baseSet, null).length === 2,
+  'a missing side is treated as empty, so nothing is deduplicated against it')
+
+const supplementGroups = [
+  { label: 'Faces', start: '\u{1F600}' },
+  { label: 'Currency', start: '$' }
+]
+assert(menu.emojiGroupLabels(combined, supplementGroups).join('|') === 'Faces|Faces|Currency|Currency',
+  'a supplement appended at the end becomes its own category with one more boundary')
+const supplementSections = menu.emojiSections(combined, '', {
+  capability: 'emoji', columns: 8, groups: supplementGroups
+})
+assert(supplementSections.rows.map(row => row.section).join('|') === 'Faces|Currency',
+  'the supplementary category is laid out after the dataset categories')
+assert(menu.emojiRows(combined, 'dollar', { capability: 'emoji' })[0].emoji === '$',
+  'supplementary glyphs are searchable by their own keywords')
+
+const extraExtension = menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'e', mode: 'emoji', label: 'Emoji', prefixes: ['emoji'],
+  extraData: ['{extensionDir}/currency.json'], command: ['true'], _sourceDir: '/plugin/extensions/emoji'
+}]))[0]
+assert(menu.emojiExtraDataPaths(extraExtension, '/usr/share/omarchy')[0] === '/plugin/extensions/emoji/currency.json',
+  'a supplementary path resolves under the same rules as the dataset')
+assert(menu.emojiExtraDataPaths(emojiExtensions[0], '/usr/share/omarchy').length === 0,
+  'an extension without a supplement has no supplementary path')
+
 // ---- sections ----
 
 const emojiGroups = menu.parseEmojiGroups(`{

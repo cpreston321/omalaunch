@@ -152,6 +152,8 @@ Item {
   // The dataset is static, so it is parsed once per catalog rather than per
   // picker session. Keep it outside the open/close state reset.
   property var emojiData: []
+  // Appended to emojiData, so a supplementary set can be its own category.
+  property var emojiExtraData: []
   property var emojiGroups: []
   property string emojiCopyFeedback: ""
   readonly property int workflowActionTimeoutMs: 30 * 1000
@@ -280,18 +282,24 @@ Item {
   // the provider's preferred source disappearing.
   readonly property var emojiDataPaths: MenuModel.emojiDataPaths(root.emojiProvider, root.omarchyPath)
   readonly property var emojiGroupsPaths: MenuModel.emojiGroupsPaths(root.emojiProvider, root.omarchyPath)
+  readonly property var emojiExtraDataPaths: MenuModel.emojiExtraDataPaths(root.emojiProvider, root.omarchyPath)
   property int emojiDataCandidate: 0
   property int emojiGroupsCandidate: 0
+  property int emojiExtraDataCandidate: 0
   readonly property string emojiDataPath: root.emojiDataCandidate < root.emojiDataPaths.length
     ? root.emojiDataPaths[root.emojiDataCandidate] : ""
   readonly property string emojiGroupsPath: root.emojiGroupsCandidate < root.emojiGroupsPaths.length
     ? root.emojiGroupsPaths[root.emojiGroupsCandidate] : ""
+  readonly property string emojiExtraDataPath: root.emojiExtraDataCandidate < root.emojiExtraDataPaths.length
+    ? root.emojiExtraDataPaths[root.emojiExtraDataCandidate] : ""
   onEmojiDataPathsChanged: root.emojiDataCandidate = 0
   onEmojiGroupsPathsChanged: root.emojiGroupsCandidate = 0
+  onEmojiExtraDataPathsChanged: root.emojiExtraDataCandidate = 0
   // Only laid out while the picker is open: pins and usage change on every
   // launcher action, and re-sectioning the whole dataset then would be waste.
+  readonly property var emojiEntries: MenuModel.concatEmojiData(root.emojiData, root.emojiExtraData)
   readonly property var emojiLayout: root.emojiPickerActive
-    ? root.emojiLayoutFor(root.emojiData, root.emojiGroups, root.filterText, root.emojiExtension,
+    ? root.emojiLayoutFor(root.emojiEntries, root.emojiGroups, root.filterText, root.emojiExtension,
       root.emojiColumns, favorites.starredIds, usage.records)
     : ({ cells: [], rows: [], sectioned: false })
 
@@ -1107,6 +1115,17 @@ Item {
       return
     }
     root.emojiData = values
+    if (root.emojiPickerActive) root.rebuildEmojiDisplay()
+  }
+
+  function loadEmojiExtraData(raw) {
+    var values = MenuModel.parseEmojiData(raw)
+    if (values.length === 0 && root.emojiExtraDataCandidate + 1 < root.emojiExtraDataPaths.length) {
+      root.emojiExtraDataCandidate += 1
+      root.advanceEmojiCandidate(root.emojiExtraDataCandidate - 1, root.emojiExtraDataPaths.length, emojiExtraDataFile)
+      return
+    }
+    root.emojiExtraData = values
     if (root.emojiPickerActive) root.rebuildEmojiDisplay()
   }
 
@@ -3253,6 +3272,16 @@ Item {
     onLoadFailed: root.loadEmojiData("")
   }
 
+  // Supplementary glyphs appended to the dataset — currency signs, which the
+  // emoji set does not carry at all.
+  FileView {
+    id: emojiExtraDataFile
+    path: root.emojiExtraDataPath
+    printErrors: false
+    onLoaded: root.loadEmojiExtraData(text())
+    onLoadFailed: root.loadEmojiExtraData("")
+  }
+
   // Category boundaries. Without them the grid still works, just ungrouped.
   FileView {
     id: emojiGroupsFile
@@ -3720,6 +3749,10 @@ Item {
                     Text {
                       textFormat: Text.PlainText
                       text: emojiCellItem.cell ? emojiCellItem.cell.emoji : ""
+                      // A colour emoji carries its own colour and ignores this,
+                      // but a monochrome glyph — a currency sign, an arrow —
+                      // would otherwise be drawn in the default black.
+                      color: emojiCellItem.hasCursor ? root.selectedText : root.foreground
                       anchors.centerIn: parent
                       horizontalAlignment: Text.AlignHCenter
                       verticalAlignment: Text.AlignVCenter
@@ -3768,7 +3801,7 @@ Item {
             visible: root.emojiPickerActive && root.emojiLayout.cells.length === 0
             anchors.centerIn: parent
             textFormat: Text.PlainText
-            text: root.emojiData.length === 0
+            text: root.emojiEntries.length === 0
               ? "No emoji dataset found"
               : "No emoji match “" + root.filterText + "”"
             color: root.foreground

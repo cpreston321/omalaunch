@@ -14,6 +14,7 @@
     "{omarchyPath}/shell/plugins/emojis/emojis.json",
     "{extensionDir}/emojis.json"
   ],
+  "extraData": ["{extensionDir}/currency.json"],
   "groups": "{extensionDir}/groups.json",
   "command": ["omarchy-menu-emoji-insert", "{emoji}"],
   "copyCommand": ["wl-copy", "--", "{emoji}"]

@@ -912,6 +912,7 @@ function normalizeExtension(raw) {
         "{extensionDir}/emojis.json"
       ])
       extension.groups = emojiFileList(raw.groups, [])
+      extension.extraData = emojiFileList(raw.extraData, [])
       extension.copyCommand = stringArray(raw.copyCommand)
       if (extension.copyCommand.length === 0) extension.copyCommand = ["wl-copy", "--", "{emoji}"]
     }
@@ -1632,6 +1633,33 @@ function emojiDataPaths(extension, omarchyPath) {
   return emojiFilePaths(extension, omarchyPath, extension && extension.data)
 }
 
+// Appended to the dataset rather than replacing it. Because groups are derived
+// by scanning the dataset in order, a set appended at the end needs nothing
+// more than one further boundary in the groups file to become its own category.
+function emojiExtraDataPaths(extension, omarchyPath) {
+  return emojiFilePaths(extension, omarchyPath, extension && extension.extraData)
+}
+
+// Cross-file duplicates are dropped, keeping the first occurrence, so the
+// supplementary set cannot introduce a second cell for an existing glyph.
+function concatEmojiData(values, extra) {
+  var base = Array.isArray(values) ? values : []
+  var more = Array.isArray(extra) ? extra : []
+  if (more.length === 0) return base
+  var seen = ({})
+  var out = []
+  for (var i = 0; i < base.length; i++) {
+    seen[lookupKey(base[i].emoji)] = true
+    out.push(base[i])
+  }
+  for (var j = 0; j < more.length; j++) {
+    if (seen[lookupKey(more[j].emoji)]) continue
+    seen[lookupKey(more[j].emoji)] = true
+    out.push(more[j])
+  }
+  return out
+}
+
 function emojiGroupsPaths(extension, omarchyPath) {
   return emojiFilePaths(extension, omarchyPath, extension && extension.groups)
 }
@@ -2238,6 +2266,8 @@ if (typeof module !== "undefined") {
     emojiFileList: emojiFileList,
     emojiDataPaths: emojiDataPaths,
     emojiGroupsPaths: emojiGroupsPaths,
+    emojiExtraDataPaths: emojiExtraDataPaths,
+    concatEmojiData: concatEmojiData,
     parseEmojiGroups: parseEmojiGroups,
     emojiGroupLabels: emojiGroupLabels,
     emojiSections: emojiSections,
