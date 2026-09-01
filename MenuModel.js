@@ -1497,32 +1497,21 @@ function matchesFileFavoriteQuery(entry, query) {
   return prepared.terms.length > 0
 }
 
-var EMOJI_FAVORITE_PREFIX = "emoji.favorite:"
+// Recents are keyed per capability, so replacing the emoji provider keeps the
+// history. The prefix still reads "favorite" because pinning used to share
+// this key; renaming it would orphan every recent already recorded.
+var EMOJI_USAGE_PREFIX = "emoji.favorite:"
 // The bundled dataset holds roughly 1.8k entries. Both caps exist so a
 // malformed or hostile dataset cannot make the grid unbounded.
 var MAX_EMOJI_DEFINITIONS = 8192
 var MAX_EMOJI_ROWS = 1000
 var MAX_EMOJI_SEQUENCE = 32
 
-// Pins are keyed by capability, like extension roots and file favorites, so
-// replacing the emoji provider keeps the user's pinned emoji.
-function emojiFavoriteId(emoji, capability) {
+function emojiUsageId(emoji, capability) {
   var value = String(emoji || "")
   var behavior = String(capability || "").trim()
   if (!value || !behavior) return ""
-  return EMOJI_FAVORITE_PREFIX + JSON.stringify([behavior, value])
-}
-
-function emojiFavorite(itemId) {
-  var value = String(itemId || "")
-  if (value.indexOf(EMOJI_FAVORITE_PREFIX) !== 0) return null
-  try {
-    var parsed = JSON.parse(value.substring(EMOJI_FAVORITE_PREFIX.length))
-    if (!Array.isArray(parsed) || parsed.length !== 2) return null
-    var capability = String(parsed[0] || "").trim()
-    var emoji = String(parsed[1] || "")
-    return capability && emoji ? { capability: capability, emoji: emoji } : null
-  } catch (e) { return null }
+  return EMOJI_USAGE_PREFIX + JSON.stringify([behavior, value])
 }
 
 // Omarchy's dataset stores one space-joined keyword blob per emoji with no
@@ -1596,12 +1585,11 @@ function emojiMatchScore(text, terms) {
   return total
 }
 
-// Match quality outranks pins and history: a search for "cat" must not lead
-// with a pinned emoji that does not match. Without a query every score is 0,
-// which leaves pinned emoji first and then most-used.
+// Match quality outranks history: a search for "cat" must not lead with a
+// frequently used emoji that does not match. Without a query every score is 0,
+// which leaves the most-used first.
 function compareEmojiRows(a, b) {
   if (a.score !== b.score) return b.score - a.score
-  if (!!a.starred !== !!b.starred) return a.starred ? -1 : 1
   if (a.usageCount !== b.usageCount) return b.usageCount - a.usageCount
   if (a.lastUsedAt !== b.lastUsedAt) return b.lastUsedAt - a.lastUsedAt
   return a.order - b.order
@@ -1611,7 +1599,6 @@ function emojiRows(values, query, options) {
   var source = Array.isArray(values) ? values : []
   var settings = options || ({})
   var capability = String(settings.capability || "")
-  var isStarred = typeof settings.isStarred === "function" ? settings.isStarred : null
   var usageCount = typeof settings.usageCount === "function" ? settings.usageCount : null
   var lastUsedAt = typeof settings.lastUsedAt === "function" ? settings.lastUsedAt : null
   var limit = finiteExtensionNumber(settings.limit, MAX_EMOJI_ROWS)
@@ -1625,12 +1612,11 @@ function emojiRows(values, query, options) {
     if (!entry || !entry.emoji) continue
     var score = emojiMatchScore(entry.search, terms)
     if (score < 0) continue
-    var itemId = emojiFavoriteId(entry.emoji, capability)
+    var itemId = emojiUsageId(entry.emoji, capability)
     rows.push({
       emoji: entry.emoji,
       caption: entry.caption,
       itemId: itemId,
-      starred: itemId && isStarred ? isStarred(itemId) === true : false,
       usageCount: itemId && usageCount ? Math.max(0, Number(usageCount(itemId)) || 0) : 0,
       lastUsedAt: itemId && lastUsedAt ? Math.max(0, Number(lastUsedAt(itemId)) || 0) : 0,
       score: score,
@@ -1703,7 +1689,6 @@ function emojiGroupsPaths(extension, omarchyPath) {
   return emojiFilePaths(extension, omarchyPath, extension && extension.groups)
 }
 
-var EMOJI_PINNED_SECTION = "Pinned"
 var EMOJI_FREQUENT_SECTION = "Frequently Used"
 var MAX_EMOJI_FREQUENT = 16
 var MAX_EMOJI_GROUPS = 64
@@ -1765,14 +1750,13 @@ function appendEmojiSection(cells, rows, section, entries, columns, options) {
   var width = Math.max(1, columns)
   for (var i = 0; i < entries.length; i++) {
     var entry = entries[i]
-    var itemId = emojiFavoriteId(entry.emoji, options.capability)
+    var itemId = emojiUsageId(entry.emoji, options.capability)
     if (i % width === 0) rows.push({ section: section, start: cells.length, count: 0 })
     rows[rows.length - 1].count += 1
     cells.push({
       emoji: entry.emoji,
       caption: entry.caption,
       itemId: itemId,
-      starred: itemId && options.isStarred ? options.isStarred(itemId) === true : false,
       row: rows.length - 1,
       column: i % width
     })
@@ -1785,10 +1769,7 @@ function emojiSections(values, query, options) {
   var source = Array.isArray(values) ? values : []
   var settings = options || ({})
   var columns = Math.max(1, finiteExtensionNumber(settings.columns, 8) || 8)
-  var context = {
-    capability: String(settings.capability || ""),
-    isStarred: typeof settings.isStarred === "function" ? settings.isStarred : null
-  }
+  var context = { capability: String(settings.capability || "") }
   var usageCount = typeof settings.usageCount === "function" ? settings.usageCount : null
   var lastUsedAt = typeof settings.lastUsedAt === "function" ? settings.lastUsedAt : null
   var cells = []
@@ -1799,19 +1780,14 @@ function emojiSections(values, query, options) {
     return { cells: cells, rows: rows, sectioned: false }
   }
 
-  var pinned = []
   var frequent = []
-  if (context.isStarred || usageCount) {
+  if (usageCount) {
     for (var i = 0; i < source.length; i++) {
       var entry = source[i]
       if (!entry || !entry.emoji) continue
-      var itemId = emojiFavoriteId(entry.emoji, context.capability)
+      var itemId = emojiUsageId(entry.emoji, context.capability)
       if (!itemId) continue
-      if (context.isStarred && context.isStarred(itemId) === true) {
-        pinned.push(entry)
-        continue
-      }
-      var count = usageCount ? Math.max(0, Number(usageCount(itemId)) || 0) : 0
+      var count = Math.max(0, Number(usageCount(itemId)) || 0)
       if (count > 0) {
         frequent.push({
           entry: entry,
@@ -1829,15 +1805,14 @@ function emojiSections(values, query, options) {
     frequent = frequent.slice(0, MAX_EMOJI_FREQUENT).map(function(value) { return value.entry })
   }
 
-  appendEmojiSection(cells, rows, EMOJI_PINNED_SECTION, pinned, columns, context)
   appendEmojiSection(cells, rows, EMOJI_FREQUENT_SECTION, frequent, columns, context)
 
-  // Pinned and frequent emoji stay listed in their own category too, so
-  // browsing a category never has holes in it.
+  // A frequently used emoji stays listed in its own category too, so browsing
+  // a category never has holes in it.
   var labels = emojiGroupLabels(source, settings.groups)
   if (!labels) {
     appendEmojiSection(cells, rows, "", source, columns, context)
-    return { cells: cells, rows: rows, sectioned: pinned.length > 0 || frequent.length > 0 }
+    return { cells: cells, rows: rows, sectioned: frequent.length > 0 }
   }
 
   var runLabel = ""
@@ -2490,8 +2465,7 @@ if (typeof module !== "undefined") {
     fileFavoriteLabel: fileFavoriteLabel,
     fileFavoriteItem: fileFavoriteItem,
     matchesFileFavoriteQuery: matchesFileFavoriteQuery,
-    emojiFavoriteId: emojiFavoriteId,
-    emojiFavorite: emojiFavorite,
+    emojiUsageId: emojiUsageId,
     emojiSearchText: emojiSearchText,
     emojiCaption: emojiCaption,
     parseEmojiData: parseEmojiData,

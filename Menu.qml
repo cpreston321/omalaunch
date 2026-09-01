@@ -333,7 +333,7 @@ Item {
   readonly property var emojiEntries: MenuModel.concatEmojiData(root.emojiData, root.emojiExtraData)
   readonly property var emojiLayout: root.emojiPickerActive
     ? root.emojiLayoutFor(root.emojiEntries, root.emojiGroups, root.filterText, root.emojiExtension,
-      root.emojiColumns, favorites.starredIds, usage.records)
+      root.emojiColumns, usage.records)
     : ({ cells: [], rows: [], sectioned: false })
 
   // The launcher keeps one size, matching Omarchy's own panels (the clipboard
@@ -394,7 +394,7 @@ Item {
     focusedExtension: !!root.focusedExtension,
     hasSelection: root.selectionCount > 0 && root.cursorActive,
     canStar: root.emojiPickerActive
-      ? (!!root.selectedEmojiRow && favorites.loaded)
+      ? false
       : (!root.dmenuActive && !root.workflowActive && !root.actionPanelActive
         && !root.clipboardPickerActive
         && displayModel.count > 0 && root.cursorActive && root.selectedIndex >= 0
@@ -404,7 +404,7 @@ Item {
           && displayModel.get(root.selectedIndex).itemId !== "extension.result"
           && displayModel.get(root.selectedIndex).itemId !== "extension.result.pending"))),
     starred: root.emojiPickerActive
-      ? (!!root.selectedEmojiRow && root.selectedEmojiRow.starred)
+      ? false
       : (displayModel.count > 0 && root.cursorActive && root.selectedIndex >= 0
         && root.selectedIndex < displayModel.count && displayModel.get(root.selectedIndex).starred),
     canToggleCapability: root.toggleableCapability.length > 0,
@@ -1305,16 +1305,15 @@ Item {
     return root.extensionForMode("emoji", capability)
   }
 
-  // The favorites/usage arguments exist so the binding re-evaluates when a pin
-  // or a paste changes the layout; the stores are read through their own
-  // accessors rather than from the passed maps.
-  function emojiLayoutFor(values, groups, query, extension, columns, _starredIds, _usageRecords) {
+  // The usage argument exists so the binding re-evaluates when a paste changes
+  // the ranking; the store is read through its own accessors rather than from
+  // the passed map.
+  function emojiLayoutFor(values, groups, query, extension, columns, _usageRecords) {
     if (!extension) return ({ cells: [], rows: [], sectioned: false })
     return MenuModel.emojiSections(values, query, {
       capability: extension.capability,
       columns: columns,
       groups: groups,
-      isStarred: function(itemId) { return favorites.isStarred(itemId) },
       usageCount: function(itemId) { return usage.count(itemId) },
       lastUsedAt: function(itemId) { return usage.lastUsedAt(itemId) }
     })
@@ -1462,14 +1461,6 @@ Item {
     root.selectEmojiRow(delta * visibleGridRows)
   }
 
-  function toggleSelectedEmojiStar() {
-    if (!root.emojiPickerActive || !favorites.loaded) return
-    var row = root.selectedEmojiRow
-    if (!row || !row.itemId) return
-    root.pendingStarSelectionId = row.itemId
-    favorites.toggle(row.itemId)
-  }
-
   function copySelectedEmoji() {
     if (!root.emojiPickerActive || !root.emojiExtension) return
     var row = root.selectedEmojiRow
@@ -1493,10 +1484,6 @@ Item {
     }
     if (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) {
       root.copySelectedEmoji()
-      return true
-    }
-    if (event.key === Qt.Key_S && (event.modifiers & Qt.ControlModifier)) {
-      root.toggleSelectedEmojiStar()
       return true
     }
     if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -3397,19 +3384,6 @@ Item {
       root.pendingStarSelectionId = ""
       root.rebuildDisplay()
       if (!selectedId) return
-      // Pinning re-ranks its surface, so follow the item that was starred
-      // rather than leaving the cursor on whatever took its place.
-      if (root.emojiPickerActive) {
-        var cells = root.emojiLayout.cells
-        for (var cell = 0; cell < cells.length; cell++) {
-          if (cells[cell].itemId !== selectedId) continue
-          root.selectedIndex = cell
-          root.cursorActive = true
-          root.revealEmojiCursor()
-          break
-        }
-        return
-      }
       for (var i = 0; i < displayModel.count; i++) {
         if (displayModel.get(i).itemId !== selectedId) continue
         root.selectedIndex = i
@@ -4020,19 +3994,6 @@ Item {
                       verticalAlignment: Text.AlignVCenter
                       font.family: root.fontFamily
                       font.pixelSize: Math.round(root.emojiCellSize * 0.52)
-                    }
-
-                    Text {
-                      text: "★"
-                      visible: !!emojiCellItem.cell && emojiCellItem.cell.starred
-                      anchors.top: parent.top
-                      anchors.right: parent.right
-                      anchors.topMargin: Style.space(3)
-                      anchors.rightMargin: Style.space(3)
-                      color: emojiCellItem.hasCursor ? root.selectedText : root.foreground
-                      opacity: 0.7
-                      font.family: root.fontFamily
-                      font.pixelSize: Style.font.caption
                     }
 
                     MouseArea {

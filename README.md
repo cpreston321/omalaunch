@@ -118,11 +118,11 @@ Press Ctrl+K on a selected item to open its Action Panel. Directories can be ope
 
 Type `emoji` and activate the **Emoji** result to open a searchable grid, eight emoji to a row. Type to filter by name and keyword — `smi fac` finds smiling faces — then press Enter to paste the selected emoji into whatever application had focus. Ctrl+C copies it to the clipboard instead and leaves the grid open so several emoji can be collected in one session.
 
-Browsing leads with **Pinned**, then **Frequently Used** — your sixteen most-used emoji — followed by the standard categories: Smileys & Emotion, People & Body, Animals & Nature, Food & Drink, Travel & Places, Activities, Objects, Symbols, and Flags, and finally **Currency**.
+Browsing leads with **Frequently Used** — your sixteen most-used emoji, ranked automatically as you paste — followed by the standard categories: Smileys & Emotion, People & Body, Animals & Nature, Food & Drink, Travel & Places, Activities, Objects, Symbols, and Flags, and finally **Currency**.
 
-The Currency section carries the sign characters the emoji set does not include at all — `$ € £ ¥ ¢ ₹ ₽ ₩ ₿` and twenty-two more — searchable by name, currency code, or country, so `dollar`, `usd`, `bitcoin`, and `india` all find their sign. Ctrl+S pins the selected emoji. Searching replaces the categories with a single ranked list.
+The Currency section carries the sign characters the emoji set does not include at all — `$ € £ ¥ ¢ ₹ ₽ ₩ ₿` and twenty-two more — searchable by name, currency code, or country, so `dollar`, `usd`, `bitcoin`, and `india` all find their sign. Searching replaces the categories with a single ranked list.
 
-Left and Right move one emoji, Up and Down move one row, and PageUp and PageDown move one screen. Escape clears the query and then leaves the grid — or closes the launcher outright if you opened the grid straight from a keybinding.
+Left and Right move one emoji, Up and Down move one row, and PageUp and PageDown move one screen. Escape clears the query and then leaves the grid — or closes the launcher outright if you opened the grid straight from a keybinding. There is nothing to pin: the grid ranks itself from what you actually use.
 
 The grid reads the emoji set your Omarchy installation already ships, so it stays current with Omarchy, and falls back to a copy bundled with Omalaunch if that file is ever unavailable. The picker therefore does not need Omarchy's own `omarchy.emojis` overlay plugin to be enabled, or installed at all. That bundled copy is `extensions/emoji/emojis.json`, taken from [Omarchy](https://omarchy.org/) (MIT).
 
