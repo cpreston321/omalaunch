@@ -352,6 +352,9 @@ Item {
   })
   readonly property var displayedActionBarHints: root.cardWidth < Style.space(560)
     ? MenuModel.compactActionBarHints(root.actionBarHints) : root.actionBarHints
+  // Applied on both sides of an action-bar divider so it sits centred in the
+  // gap rather than hugging the hint that follows it.
+  readonly property int actionBarDividerGap: Style.space(12)
 
   function finishRequest(selection) {
     if (!root.requestActive || !root.doneFile) {
@@ -4088,11 +4091,14 @@ Item {
             color: Util.alpha(root.foreground, 0.035)
           }
 
+          // Two nested spacings, not one: the divider gap is owned by the outer
+          // Row and the per-hint Row equally, so a divider sits centred between
+          // its neighbours. A label and its key cap keep their own tighter gap.
           Row {
             anchors.right: parent.right
             anchors.rightMargin: card.contentRightInset
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(18)
+            spacing: root.actionBarDividerGap
 
             Repeater {
               model: root.displayedActionBarHints
@@ -4100,7 +4106,7 @@ Item {
               Row {
                 required property int index
                 required property var modelData
-                spacing: Style.space(5)
+                spacing: root.actionBarDividerGap
                 anchors.verticalCenter: parent.verticalCenter
 
                 Rectangle {
@@ -4110,6 +4116,10 @@ Item {
                   color: Util.alpha(root.foreground, 0.14)
                   anchors.verticalCenter: parent.verticalCenter
                 }
+
+                Row {
+                  spacing: Style.space(5)
+                  anchors.verticalCenter: parent.verticalCenter
 
                 Text {
                   text: modelData.label
@@ -4152,6 +4162,7 @@ Item {
                       }
                     }
                   }
+                }
                 }
               }
             }
