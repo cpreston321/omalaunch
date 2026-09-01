@@ -6,12 +6,20 @@ Omalaunch keeps the familiar Omarchy command tree while adding fast global searc
 
 ![Omalaunch demo](assets/omalaunch-demo.gif)
 
+> This is a fork of [daniellemky/omalaunch](https://github.com/daniellemky/omalaunch).
+> It adds user-installed extensions — definitions dropped into
+> `~/.config/omarchy/omalaunch/extensions.d/` with no plugin around them — and
+> an `action` extension mode for entries that run a command straight from the
+> launcher. Both are documented in [EXTENSIONS.md](EXTENSIONS.md). The
+> installation commands below point at this fork; use the upstream URL if you
+> want the original.
+
 ## Installation
 
 ### From the Omarchy menu
 
 1. Open **Setup › Plugins › Add Plugin**.
-2. Enter `https://github.com/daniellemky/omalaunch` as the Git URL.
+2. Enter `https://github.com/cpreston321/omalaunch` as the Git URL.
 3. Review and confirm Omarchy’s plugin trust warning.
 4. Confirm that you want to enable Omalaunch.
 5. Choose **left** when prompted for a bar section.
@@ -19,7 +27,7 @@ Omalaunch keeps the familiar Omarchy command tree while adding fast global searc
 ### From a terminal
 
 ```bash
-omarchy plugin add https://github.com/daniellemky/omalaunch --enable
+omarchy plugin add https://github.com/cpreston321/omalaunch --enable
 ```
 
 Review and confirm the plugin trust warning, then choose **left** when prompted for a bar section.
@@ -188,9 +196,15 @@ Open the fixed top-level **Extensions** directory to find every active bundled a
 
 Shortcut activation follows the extension type: Files opens its browser, Emoji opens its grid, Timezone prepares its prefix, Calculator and Currency conversion open focused query input, and workflow extensions open their workflow. A replacement provider keeps the same shortcut and favorite because identity is based on stable capability rather than provider id. Missing dependencies are shown on the shortcut without affecting unrelated extensions.
 
-Omalaunch includes replaceable bundled extensions. Every external Omalaunch extension is simply a standard Omarchy plugin, so it uses the same installation, enable/disable, update, and removal workflow as any other Omarchy plugin.
+Omalaunch includes replaceable bundled extensions. An external extension can be a standard Omarchy plugin, using the same installation, enable/disable, update, and removal workflow as any other plugin — or, on this fork, a definition you drop in yourself:
 
-Install an extension directly from its repository:
+```
+~/.config/omarchy/omalaunch/extensions.d/<name>/extension.json
+```
+
+No plugin, no manifest, no install step; an executable named `provider` beside it can generate entries instead of declaring them. See [EXTENSIONS.md](EXTENSIONS.md).
+
+Install a packaged extension directly from its repository:
 
 ```bash
 omarchy plugin add https://github.com/example/omalaunch-example --enable
