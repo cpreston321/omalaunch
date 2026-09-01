@@ -57,7 +57,9 @@ Star frequently used applications, commands, files, directories, and extension s
 
 ## Calculator
 
-Evaluate arithmetic, units, and currency conversions without leaving the launcher. Press Enter to copy the result.
+Evaluate arithmetic, units, and currency conversions without leaving the launcher. The result row reads as a ledger line: the expression on the left, the answer right-aligned and larger in the theme's accent colour. Press Enter to copy it.
+
+Currency answers are shown the way money is written — amount first, two decimals, grouped thousands — so `10 usd to cad` gives `13.89 CAD` rather than `CAD 13.89019350`. What is shown is what gets copied. Unit answers keep their own shape, and an answer small enough that two decimals would round it to zero keeps its own precision instead.
 
 ![Calculator result in Omalaunch](assets/calculator.png)
 

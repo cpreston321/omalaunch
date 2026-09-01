@@ -1785,6 +1785,61 @@ function emojiSections(values, query, options) {
   return { cells: cells, rows: rows, sectioned: true }
 }
 
+// qalc prints a currency code before the amount and to full precision
+// ("CAD 13.89019350"). A conversion is read as money, so present it the way
+// money is written: amount first, two decimals, grouped thousands.
+var CURRENCY_RESULT = /^([A-Za-z]{3})\s+([+-]?[0-9][0-9,]*(?:\.[0-9]+)?)$/
+var LEADING_NUMBER = /^([+-]?[0-9][0-9,]*(?:\.[0-9]+)?)([\s\S]*)$/
+
+function groupThousands(text) {
+  var parts = String(text).split(".")
+  parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+  return parts.join(".")
+}
+
+// Trailing zeros in a fraction carry no information; a bare trailing point is
+// never wanted either.
+function trimTrailingZeros(text) {
+  var value = String(text)
+  if (value.indexOf(".") < 0) return value
+  return value.replace(/(\.[0-9]*?)0+$/, "$1").replace(/\.$/, "")
+}
+
+function isCurrencyResult(raw) {
+  return CURRENCY_RESULT.test(String(raw || "").trim())
+}
+
+function formatCalculationValue(raw) {
+  var text = String(raw || "").trim()
+  if (!text) return ""
+
+  var currency = CURRENCY_RESULT.exec(text)
+  if (currency) {
+    var amount = Number(currency[2].replace(/,/g, ""))
+    if (!isFinite(amount)) return text
+    var fixed = amount.toFixed(2)
+    // Two decimals would round a small non-zero amount to "0.00", which reads
+    // as nothing at all. Keep that one's own precision instead.
+    if (amount !== 0 && Number(fixed) === 0) fixed = trimTrailingZeros(currency[2].replace(/,/g, ""))
+    return groupThousands(fixed) + " " + currency[1].toUpperCase()
+  }
+
+  // Everything else keeps its own shape — units, ratios, times, and anything
+  // qalc could not evaluate — with only the number tidied.
+  var leading = LEADING_NUMBER.exec(text)
+  if (leading) return trimTrailingZeros(leading[1]) + leading[2]
+  return text
+}
+
+// The expression shown beside the answer. Currency codes are uppercased only
+// when the answer is a currency, so function names like sin, cos, and log are
+// never touched.
+function calculationExpression(query, currency) {
+  var text = String(query || "").trim().replace(/\s+/g, " ")
+  if (!text || !currency) return text
+  return text.replace(/\b([A-Za-z]{3})\b/g, function(match) { return match.toUpperCase() })
+}
+
 function displayRow(items, itemOrder, checkedResults, entry, detail, score, section, metadata) {
   var target = entry.kind === "link" ? entry.target : entry.id
   return {
@@ -1805,9 +1860,10 @@ function displayRow(items, itemOrder, checkedResults, entry, detail, score, sect
     score: score || 0,
     section: section || "",
     starred: false,
-    // Every row carries the role so the ListModel's role set stays uniform
+    // Every row carries these roles so the ListModel's role set stays uniform
     // regardless of which build path produced the row.
     disabled: false,
+    value: "",
     matchPriority: 0,
     usageCount: 0,
     lastUsedAt: 0
@@ -2069,6 +2125,11 @@ if (typeof module !== "undefined") {
     parseEmojiGroups: parseEmojiGroups,
     emojiGroupLabels: emojiGroupLabels,
     emojiSections: emojiSections,
+    groupThousands: groupThousands,
+    trimTrailingZeros: trimTrailingZeros,
+    isCurrencyResult: isCurrencyResult,
+    formatCalculationValue: formatCalculationValue,
+    calculationExpression: calculationExpression,
     displayRow: displayRow,
     actionBarHints: actionBarHints,
     compactActionBarHints: compactActionBarHints

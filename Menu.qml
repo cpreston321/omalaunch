@@ -2055,15 +2055,21 @@ Item {
       }
 
       if (liveResult && root.resultExtension) {
+        // The expression reads on the left and the answer on the right, so the
+        // row is a ledger line rather than a label prefixed with "=".
+        var resultCurrency = MenuModel.isCurrencyResult(liveResult)
+        var resultValue = MenuModel.formatCalculationValue(liveResult)
         var resultItem = root.normalizeItem("extension.result", {
           icon: root.resultExtension.icon,
           iconFont: root.resultExtension.iconFont,
-          label: "= " + liveResult,
+          label: MenuModel.calculationExpression(root.extensionQuery || query, resultCurrency),
           description: root.resultExtension.description,
-          action: root.shellCommand(root.resultExtension.resultCommand, { result: liveResult, query: query })
+          // What is shown is what is copied.
+          action: root.shellCommand(root.resultExtension.resultCommand, { result: resultValue, query: query })
         })
         var resultRow = root.displayRow(resultItem, root.resultExtension.description, -1)
         resultRow.matchPriority = 110
+        resultRow.value = resultValue
         rows.push(resultRow)
       }
 
@@ -3805,6 +3811,7 @@ Item {
               required property int childCount
               required property bool starred
               required property bool disabled
+              required property string value
 
               readonly property bool hasCursor: root.cursorActive && row.index === root.selectedIndex
               readonly property bool isApp: row.kind === "app"
@@ -3883,11 +3890,30 @@ Item {
                 y: contentColumn.y + labelText.y + (labelText.height - height) / 2
               }
 
+              // The answer to a calculation or conversion, right-aligned and
+              // larger. It takes the accent colour so it reads as the row's
+              // payload rather than as more subtitle text.
+              Text {
+                id: valueText
+                visible: row.value.length > 0
+                text: row.value
+                color: root.selectedText
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.title
+                font.weight: Font.Medium
+                horizontalAlignment: Text.AlignRight
+                elide: Text.ElideRight
+                width: Math.min(implicitWidth, row.width * 0.5)
+                anchors.right: trail.left
+                anchors.rightMargin: Style.space(10)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
               Column {
                 id: contentColumn
                 anchors.left: row.isImageFile ? imagePreview.right : (row.hasIcon ? iconText.right : parent.left)
                 anchors.leftMargin: row.hasIcon ? Style.space(6) : root.rowReservedBorderLeft + Style.space(18)
-                anchors.right: trail.left
+                anchors.right: row.value.length > 0 ? valueText.left : trail.left
                 anchors.rightMargin: Style.space(6)
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: Style.space(3)

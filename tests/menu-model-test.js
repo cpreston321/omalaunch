@@ -663,6 +663,55 @@ assert(menu.dependencySetup(missingInsert) === null
   && menu.unavailableExtensionDetail(missingInsert) === 'Missing dependency: omarchy-menu-emoji-insert',
   'a missing Omarchy helper is reported but never offered as a package install')
 
+// ---- calculation and conversion presentation ----
+
+assert(menu.formatCalculationValue('CAD 13.89019350') === '13.89 CAD',
+  'a currency answer leads with the amount at two decimals')
+assert(menu.formatCalculationValue('CAD 1234567.891') === '1,234,567.89 CAD',
+  'currency amounts group thousands')
+assert(menu.formatCalculationValue('USD -1234.5') === '-1,234.50 USD',
+  'a negative currency amount keeps its sign and grouping')
+assert(menu.formatCalculationValue('EUR 0.004') === '0.004 EUR',
+  'two decimals never round a small non-zero amount away to nothing')
+assert(menu.formatCalculationValue('JPY 0') === '0.00 JPY',
+  'a genuine zero still formats as a currency amount')
+assert(menu.formatCalculationValue('1000 m') === '1000 m'
+  && menu.formatCalculationValue('1.5 m/s') === '1.5 m/s'
+  && menu.formatCalculationValue('2 h 30 min') === '2 h 30 min',
+  'unit answers keep their own shape')
+assert(menu.formatCalculationValue('13.890000') === '13.89'
+  && menu.formatCalculationValue('0.30000000') === '0.3'
+  && menu.formatCalculationValue('20') === '20',
+  'trailing zeros are trimmed without touching whole numbers')
+assert(menu.formatCalculationValue('rem(25, 1 B)') === 'rem(25, 1 B)',
+  'an answer qalc could not evaluate is passed through untouched')
+assert(menu.formatCalculationValue('') === '' && menu.formatCalculationValue(null) === '',
+  'an empty answer formats to nothing')
+assert(menu.formatCalculationValue(' 42 ') === '42', 'answers are trimmed')
+
+assert(menu.trimTrailingZeros('1.2300') === '1.23' && menu.trimTrailingZeros('5.000') === '5'
+  && menu.trimTrailingZeros('700') === '700',
+  'trailing-zero trimming leaves integers alone')
+assert(menu.groupThousands('1234567.89') === '1,234,567.89'
+  && menu.groupThousands('-1234.5') === '-1,234.5'
+  && menu.groupThousands('999') === '999',
+  'thousands grouping handles signs and short numbers')
+
+assert(menu.isCurrencyResult('CAD 13.89') && !menu.isCurrencyResult('1000 m')
+  && !menu.isCurrencyResult('20'),
+  'only a leading three-letter code marks a currency answer')
+
+assert(menu.calculationExpression('10 usd to cad', true) === '10 USD to CAD',
+  'currency codes in the expression are uppercased')
+assert(menu.calculationExpression('sin(30) + log(100)', false) === 'sin(30) + log(100)',
+  'a non-currency expression is never uppercased, so function names survive')
+assert(menu.calculationExpression('  25   *  4  ', false) === '25 * 4',
+  'the expression is trimmed and its whitespace collapsed')
+assert(menu.calculationExpression('', true) === '', 'an empty expression stays empty')
+
+assert(menu.displayRow({}, [], {}, { id: 'x', kind: 'action' }, '', 0).value === '',
+  'ordinary rows carry an empty value so the model role set stays uniform')
+
 // ---------------------------------------------------------------- emoji
 
 const emojiExtensions = menu.parseExtensions(JSON.stringify([{
