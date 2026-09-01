@@ -985,23 +985,16 @@ assert(menu.emojiMatchScore('ship rocket launch', ['ship']) > menu.emojiMatchSco
 
 const emojiCapabilityRows = menu.emojiRows(emojiData, 'rocket', { capability: 'emoji' })
 assert(emojiCapabilityRows.length === 1 && emojiCapabilityRows[0].emoji === '\u{1F680}', 'emoji rows filter by query')
-assert(menu.emojiFavorite(emojiCapabilityRows[0].itemId).capability === 'emoji'
-  && menu.emojiFavorite(emojiCapabilityRows[0].itemId).emoji === '\u{1F680}',
-  'emoji pins round-trip their capability and glyph')
-assert(menu.emojiFavorite('file.favorite:["files","file","/tmp"]') === null, 'file favorites are not emoji pins')
-assert(menu.emojiFavoriteId('\u{1F680}', '') === '', 'emoji pins require a capability')
+assert(menu.emojiUsageId('\u{1F680}', '') === '', 'a recents key requires a capability')
+assert(menu.emojiUsageId('\u{1F680}', 'emoji') === 'emoji.favorite:["emoji","\u{1F680}"]',
+  'the recents key keeps its historical prefix, so recents already recorded are not orphaned')
 assert(menu.emojiRows(emojiData, '', { capability: 'emoji' }).map(row => row.emoji).join('') === emojiData.map(entry => entry.emoji).join(''),
   'an empty emoji query preserves dataset order')
 assert(menu.emojiRows(emojiData, '', { capability: 'emoji', limit: 2 }).length === 2, 'emoji rows honor their limit')
-assert(menu.emojiRows(emojiData, '', {}).every(row => row.itemId === ''), 'emoji rows without a capability carry no pin id')
+assert(menu.emojiRows(emojiData, '', {}).every(row => row.itemId === ''),
+  'emoji rows without a capability carry no recents key')
 
-const pinnedEmojiId = menu.emojiFavoriteId('\u{1F42C}', 'emoji')
-const pinnedEmojiRows = menu.emojiRows(emojiData, '', {
-  capability: 'emoji',
-  isStarred: itemId => itemId === pinnedEmojiId
-})
-assert(pinnedEmojiRows[0].emoji === '\u{1F42C}' && pinnedEmojiRows[0].starred, 'pinned emoji lead an unfiltered grid')
-const usedEmojiId = menu.emojiFavoriteId('\u{1F680}', 'emoji')
+const usedEmojiId = menu.emojiUsageId('\u{1F680}', 'emoji')
 const usedEmojiRows = menu.emojiRows(emojiData, '', {
   capability: 'emoji',
   usageCount: itemId => (itemId === usedEmojiId ? 4 : 0)
@@ -1009,11 +1002,12 @@ const usedEmojiRows = menu.emojiRows(emojiData, '', {
 assert(usedEmojiRows[0].emoji === '\u{1F680}', 'frequently pasted emoji lead an unfiltered grid')
 const searchedEmojiRows = menu.emojiRows(emojiData, 'dolphin', {
   capability: 'emoji',
-  isStarred: itemId => itemId === usedEmojiId,
   usageCount: itemId => (itemId === usedEmojiId ? 40 : 0)
 })
 assert(searchedEmojiRows.length === 1 && searchedEmojiRows[0].emoji === '\u{1F42C}',
-  'pins and history never promote an emoji that does not match the query')
+  'history never promotes an emoji that does not match the query')
+assert(menu.emojiRows(emojiData, '', { capability: 'emoji' }).every(row => row.starred === undefined),
+  'rows carry no pinned flag now that the grid has no pinning')
 
 // ---- a supplementary glyph set ----
 
@@ -1113,25 +1107,22 @@ assert(!searchedSections.sectioned && searchedSections.rows.length === 1
   && searchedSections.rows[0].section === '' && searchedSections.cells.length === 1,
   'a search answers with one unlabelled ranked section')
 
-const pinnedId = menu.emojiFavoriteId('\u{1F42C}', 'emoji')
-const frequentId = menu.emojiFavoriteId('\u{1F680}', 'emoji')
+const frequentId = menu.emojiUsageId('\u{1F680}', 'emoji')
 const historySections = menu.emojiSections(groupedData, '', {
   capability: 'emoji', columns: 2, groups: emojiGroups,
-  isStarred: itemId => itemId === pinnedId,
   usageCount: itemId => (itemId === frequentId ? 3 : 0)
 })
-assert(historySections.rows[0].section === 'Pinned'
-  && historySections.cells[historySections.rows[0].start].emoji === '\u{1F42C}',
-  'pinned emoji lead their own section')
-assert(historySections.rows[1].section === 'Frequently Used'
-  && historySections.cells[historySections.rows[1].start].emoji === '\u{1F680}',
-  'frequently used emoji follow in their own section')
-assert(historySections.rows.slice(2).map(row => row.section).join('|') === 'Faces|Travel',
-  'categories still follow the history sections')
-assert(historySections.cells.filter(cell => cell.emoji === '\u{1F42C}').length === 2,
-  'a pinned emoji stays listed in its category too, so browsing has no holes')
-assert(historySections.cells.every(cell => cell.itemId === menu.emojiFavoriteId(cell.emoji, 'emoji')),
-  'every laid-out cell carries its pin id')
+assert(historySections.rows[0].section === 'Frequently Used'
+  && historySections.cells[historySections.rows[0].start].emoji === '\u{1F680}',
+  'frequently used emoji lead the grid in their own section')
+assert(historySections.rows.slice(1).map(row => row.section).join('|') === 'Faces|Travel',
+  'categories follow the frequently used section')
+assert(!historySections.rows.some(row => row.section === 'Pinned'),
+  'there is no pinned section')
+assert(historySections.cells.filter(cell => cell.emoji === '\u{1F680}').length === 2,
+  'a frequently used emoji stays listed in its category too, so browsing has no holes')
+assert(historySections.cells.every(cell => cell.itemId === menu.emojiUsageId(cell.emoji, 'emoji')),
+  'every laid-out cell carries its recents key')
 
 const manyFrequent = menu.parseEmojiData(JSON.stringify(
   Array.from({ length: 40 }, (_, i) => ({ e: String.fromCodePoint(0x1F600 + i), k: `face-${i}` }))
@@ -1151,10 +1142,10 @@ assert(ungroupedSections.rows.every(row => row.section === '') && ungroupedSecti
 assert(menu.openStateReset().routedExtensionSession === false,
   'a new launcher session is not a routed extension session')
 
-const emojiHints = menu.actionBarHints({ emojiPickerActive: true, hasSelection: true, canStar: true, starred: false })
+const emojiHints = menu.actionBarHints({ emojiPickerActive: true, hasSelection: true, canStar: false })
 assert(emojiHints[0].label === 'Paste' && emojiHints[0].shortcut === 'Enter', 'the emoji picker pastes on Enter')
 assert(emojiHints.some(hint => hint.label === 'Copy' && hint.shortcut === 'Ctrl C'), 'the emoji picker copies on Ctrl+C')
-assert(emojiHints.some(hint => hint.label === 'Star' && hint.shortcut === 'Ctrl S'), 'the emoji picker pins on Ctrl+S')
+assert(!emojiHints.some(hint => hint.shortcut === 'Ctrl S'), 'the emoji picker offers no pinning')
 assert(!menu.actionBarHints({ emojiPickerActive: true, hasSelection: false }).some(hint => hint.label === 'Copy'),
   'an empty emoji grid offers no copy hint')
 

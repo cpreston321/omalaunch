@@ -218,11 +218,11 @@ out of order, or not at the start of the dataset abandons grouping entirely and
 leaves one flat grid rather than mislabeling half of it. JSONC comments and
 trailing commas are accepted.
 
-While browsing, the grid leads with **Pinned**, then **Frequently Used** — the
-sixteen most-used emoji — and then each category. Pinned and frequently used
-emoji remain listed in their own category too, so a category is never missing
-entries. A query replaces all of it with one ranked, unlabelled list, because
-category order and ranking cannot both hold.
+While browsing, the grid leads with **Frequently Used** — the sixteen most-used
+emoji, ranked from pasting rather than from any explicit action — and then each
+category. A frequently used emoji remains listed in its own category too, so a
+category is never missing entries. A query replaces all of it with one ranked,
+unlabelled list, because category order and ranking cannot both hold.
 
 `command` pastes the selected emoji and `copyCommand` places it on the
 clipboard; both support `{emoji}`. Declare every executable the paste path
@@ -235,11 +235,13 @@ unfiltered grid.
 
 Searching matches whole words and word prefixes across an entry's keywords —
 `smi fac` finds `smiling face`, and every term must match. A keyword at the
-front of an entry outranks one at the back. Ctrl+S pins the selected emoji to
-the front of the grid; pins are keyed by capability, so replacing the provider
-preserves them. Pinned emoji stay inside the picker rather than appearing on
-the launcher's starting view, and match quality always outranks pins and usage
+front of an entry outranks one at the back. Match quality always outranks usage
 history, so a search never leads with an emoji that does not match it.
+
+The grid has no pinning: usage ranking does the same job without asking for an
+action first. Recents are keyed by capability, so replacing the provider keeps
+the history. The stored key still reads `emoji.favorite:` because pinning once
+shared it; renaming it would orphan every recent already recorded.
 
 Left and Right move one cell, Up and Down move one row, PageUp and PageDown
 move one screen, and Escape clears the query and then leaves the picker. Rows
