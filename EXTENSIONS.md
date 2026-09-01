@@ -366,12 +366,26 @@ Select a provider by extension `id` in `config.jsonc`. The key is the capability
 }
 ```
 
+Select a row in **Extensions** and press Delete to switch its capability off
+from the launcher itself. That writes
+`~/.local/state/omarchy/omalaunch-capabilities.json`, alongside the favorites
+and usage stores; `config.jsonc` is hand-authored and Omalaunch never rewrites
+it. A capability whose `enabled` is written out in `config.jsonc` is pinned
+there, so its row reports **Disabled in configuration** and Delete does
+nothing — the configured value always wins.
+
+A capability switched off from the row stays listed in **Extensions**, dimmed
+and labelled, because that row is the only way to switch it back on. It is
+absent from everywhere else: the starting view, global search, prefixes, live
+queries, and activation. An external extension's dialog also names
+`omarchy plugin remove <id>`, since disabling leaves its plugin installed.
+
 `enabled` defaults to true. Setting it to false drops every provider of that
-capability before resolution, so it leaves no shortcut in **Extensions**, no
-prefix, no global-search entry, and nothing for another provider to fall back
-to. It applies to bundled and external providers alike; an external plugin can
-also be removed outright with `omarchy plugin remove`, but a bundled extension
-has no other off switch.
+capability before resolution, so it leaves no shortcut in **Extensions** at
+all — not even a dimmed one — no prefix, no global-search entry, and nothing
+for another provider to fall back to. It applies to bundled and external
+providers alike; an external plugin can also be removed outright with
+`omarchy plugin remove`, but a bundled extension has no other off switch.
 
 The value must be a real boolean — a string like `"false"` is refused with a
 diagnostic rather than treated as truthy, so a typo cannot quietly remove a

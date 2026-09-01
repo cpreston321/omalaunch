@@ -78,6 +78,14 @@ Item {
   property bool defaultMenuReloadPending: false
   property bool userMenuReloadPending: false
   property var extensions: []
+  // Capabilities the user configured explicitly, so the launcher's own toggle
+  // can defer to a value they typed.
+  property var configuredCapabilities: ({})
+  // Search, prefixes, live queries, and activation all work from the enabled
+  // subset. The full list survives only so Extensions can still list a
+  // disabled row for switching it back on.
+  readonly property var enabledExtensions: MenuModel.enabledExtensions(root.extensions, root.stateDisabledCapabilities)
+  readonly property var stateDisabledCapabilities: root.disabledCapabilityList(capabilities.disabledIds, root.configuredCapabilities)
   property var extensionDiagnostics: []
   property var unavailableResultExtension: null
   property bool extensionsReloadPending: false
@@ -191,6 +199,8 @@ Item {
   }
   property bool deleteConfirmOpen: false
   property bool dependencyConfirmOpen: false
+  property bool capabilityConfirmOpen: false
+  property var capabilityTarget: null
   property string pendingStarSelectionId: ""
   property var deleteTarget: null
   property var dependencyTarget: null
@@ -201,12 +211,15 @@ Item {
     deleteTarget = null
     dependencyConfirmOpen = false
     dependencyTarget = null
+    capabilityConfirmOpen = false
+    capabilityTarget = null
   }
   // Bound to the central [menu] section in shell.toml via Color.qml.
   // Each color already includes its alpha companion (composed in the
   // singleton), so consumers can drop them straight into a Rectangle.
   LauncherFavorites { id: favorites }
   LauncherUsage { id: usage }
+  LauncherCapabilities { id: capabilities }
   CurrencyExtension.CurrencyRates { id: currencyRates }
 
   Connections {
@@ -297,6 +310,18 @@ Item {
   readonly property var selectedEmojiRow: root.emojiPickerActive && root.cursorActive
     ? root.emojiCell(root.selectedIndex) : null
 
+  // Capability toggling is offered only on an unfiltered Extensions row, and
+  // never for a capability whose value is pinned in configuration.
+  readonly property string toggleableCapability: !root.dmenuActive && !root.emojiPickerActive
+    && !root.fileBrowserActive && !root.workflowActive && !root.actionPanelActive
+    && root.activeMenu === "extensions" && !root.filterText && capabilities.loaded
+    && displayModel.count > 0 && root.cursorActive
+    && root.selectedIndex >= 0 && root.selectedIndex < displayModel.count
+    && !MenuModel.capabilityLockedByConfig(
+      MenuModel.extensionRootCapability(displayModel.get(root.selectedIndex).itemId),
+      root.configuredCapabilities)
+    ? MenuModel.extensionRootCapability(displayModel.get(root.selectedIndex).itemId) : ""
+
   readonly property var actionBarHints: MenuModel.actionBarHints({
     dmenuActive: root.dmenuActive,
     dmenuInput: root.dmenuActive && root.mode === "input",
@@ -320,7 +345,10 @@ Item {
     starred: root.emojiPickerActive
       ? (!!root.selectedEmojiRow && root.selectedEmojiRow.starred)
       : (displayModel.count > 0 && root.cursorActive && root.selectedIndex >= 0
-        && root.selectedIndex < displayModel.count && displayModel.get(root.selectedIndex).starred)
+        && root.selectedIndex < displayModel.count && displayModel.get(root.selectedIndex).starred),
+    canToggleCapability: root.toggleableCapability.length > 0,
+    capabilityDisabled: root.toggleableCapability.length > 0
+      && root.isCapabilityDisabled(root.toggleableCapability)
   })
   readonly property var displayedActionBarHints: root.cardWidth < Style.space(560)
     ? MenuModel.compactActionBarHints(root.actionBarHints) : root.actionBarHints
@@ -391,8 +419,9 @@ Item {
 
   // Menu rows only surface their detail while a search is narrowing them;
   // dmenu rows carry caller-supplied subtext that must always be visible.
-  function rowHeightForDetail(detail) {
-    return (root.filterText || root.dmenuActive) && detail ? root.detailRowHeight : root.baseRowHeight
+  function rowHeightForDetail(detail, disabled) {
+    return ((root.filterText || root.dmenuActive || disabled === true) && detail)
+      ? root.detailRowHeight : root.baseRowHeight
   }
 
   // Height the card can devote to rows below its pinned top edge.
@@ -431,7 +460,7 @@ Item {
       var row = displayModel.get(i)
       if (i > 0) total += root.rowSpacing
       if (row.section === "drilldown" && previousSection !== "drilldown") total += root.dividerHeight
-      total += root.rowHeightForDetail(row.detail)
+      total += root.rowHeightForDetail(row.detail, row.disabled)
       previousSection = row.section
       totals.push(total)
     }
@@ -550,8 +579,8 @@ Item {
   function isPotentialExtensionQuery(value) {
     var query = String(value || "")
     return /^\s*[+-]?(?:\d|\.\d)/.test(query)
-      || MenuModel.queryExtension(root.extensions, query) !== null
-      || MenuModel.unavailableQueryExtension(root.extensions, query) !== null
+      || MenuModel.queryExtension(root.enabledExtensions, query) !== null
+      || MenuModel.unavailableQueryExtension(root.enabledExtensions, query) !== null
   }
 
   function stopExtensionQuery(reason) {
@@ -633,7 +662,7 @@ Item {
     }
 
     var query = root.effectiveExtensionQuery()
-    var queryCatalog = root.focusedExtension ? [root.focusedExtension] : root.extensions
+    var queryCatalog = root.focusedExtension ? [root.focusedExtension] : root.enabledExtensions
     root.resultExtension = MenuModel.queryExtension(queryCatalog, query)
     root.unavailableResultExtension = MenuModel.unavailableQueryExtension(queryCatalog, query)
     if (root.resultExtension) extensionQueryTimer.restart()
@@ -668,9 +697,26 @@ Item {
   }
 
   function extensionByCapability(capability) {
-    for (var i = 0; i < root.extensions.length; i++)
-      if (root.extensions[i].capability === capability) return root.extensions[i]
+    for (var i = 0; i < root.enabledExtensions.length; i++)
+      if (root.enabledExtensions[i].capability === capability) return root.enabledExtensions[i]
     return null
+  }
+
+  // A config-pinned capability is not the launcher's to toggle, so its state
+  // entry is ignored rather than silently fighting the configured value.
+  function disabledCapabilityList(disabledIds, configured) {
+    var result = []
+    for (var capability in disabledIds) {
+      if (!Object.prototype.hasOwnProperty.call(disabledIds, capability)) continue
+      if (disabledIds[capability] !== true) continue
+      if (MenuModel.capabilityLockedByConfig(capability, configured)) continue
+      result.push(capability)
+    }
+    return result
+  }
+
+  function isCapabilityDisabled(capability) {
+    return root.stateDisabledCapabilities.indexOf(String(capability || "")) >= 0
   }
 
   function extensionForRootId(itemId) {
@@ -717,6 +763,7 @@ Item {
 
   function activateExtensionRoot(extension) {
     if (!extension) return
+    if (root.isCapabilityDisabled(extension.capability)) return
     if (!extension.available) {
       var setup = MenuModel.dependencySetup(extension)
       if (setup) {
@@ -916,8 +963,8 @@ Item {
   }
 
   function filesExtensionForCapability(capability) {
-    for (var i = 0; i < root.extensions.length; i++) {
-      var extension = root.extensions[i]
+    for (var i = 0; i < root.enabledExtensions.length; i++) {
+      var extension = root.enabledExtensions[i]
       if (extension && extension.mode === "files" && extension.capability === capability) return extension
     }
     return null
@@ -1002,8 +1049,8 @@ Item {
   // ------------------------------------------------------------------
 
   function emojiExtensionForCapability(capability) {
-    for (var i = 0; i < root.extensions.length; i++) {
-      var extension = root.extensions[i]
+    for (var i = 0; i < root.enabledExtensions.length; i++) {
+      var extension = root.enabledExtensions[i]
       if (extension && extension.mode === "emoji" && extension.capability === capability) return extension
     }
     return null
@@ -1914,8 +1961,8 @@ Item {
 
       var matchedExtensionRoots = ({})
       if (!root.focusedExtension && (active === "root" || active === "extensions")) {
-        for (var searchExtensionIndex = 0; searchExtensionIndex < root.extensions.length; searchExtensionIndex++) {
-          var searchExtension = root.extensions[searchExtensionIndex]
+        for (var searchExtensionIndex = 0; searchExtensionIndex < root.enabledExtensions.length; searchExtensionIndex++) {
+          var searchExtension = root.enabledExtensions[searchExtensionIndex]
           var searchExtensionItem = MenuModel.extensionRootItem(searchExtension)
           if (!searchExtensionItem || !MenuModel.matchesQuery(searchExtensionItem, preparedQuery, true)) continue
           var searchExtensionRow = root.displayRow(searchExtensionItem, searchExtensionItem.description,
@@ -1929,7 +1976,7 @@ Item {
         }
       }
 
-      var activeExtensionCatalog = root.focusedExtension ? [root.focusedExtension] : root.extensions
+      var activeExtensionCatalog = root.focusedExtension ? [root.focusedExtension] : root.enabledExtensions
       // A focused prefix extension has a hidden global prefix and one literal
       // prompt action. It must not rediscover its own root/suggestion rows.
       var focusedPrefix = MenuModel.focusedPrefixMatch(root.focusedExtension, query)
@@ -2045,10 +2092,19 @@ Item {
         var extensionRootRows = []
         for (var extensionRootIndex = 0; extensionRootIndex < root.extensions.length; extensionRootIndex++) {
           var listedExtension = root.extensions[extensionRootIndex]
-          var listedExtensionItem = MenuModel.extensionRootItem(listedExtension)
+          var listedDisabled = root.isCapabilityDisabled(listedExtension.capability)
+          var listedExtensionItem = MenuModel.extensionRootItem(listedExtension, listedDisabled,
+            MenuModel.capabilityLockedByConfig(listedExtension.capability, root.configuredCapabilities))
           if (!listedExtensionItem) continue
           var listedExtensionRow = root.displayRow(listedExtensionItem, listedExtensionItem.description, extensionRootIndex)
           listedExtensionRow.starred = favorites.isStarred(listedExtensionRow.itemId)
+          listedExtensionRow.disabled = listedDisabled
+          // A disabled extension belongs only to Extensions: the starting view
+          // is for things that can actually be run.
+          if (listedDisabled) {
+            if (active === "extensions") extensionRootRows.push(listedExtensionRow)
+            continue
+          }
           if (active === "extensions" || listedExtensionRow.starred) extensionRootRows.push(listedExtensionRow)
         }
         extensionRootRows = MenuModel.sortExtensionRootRows(extensionRootRows)
@@ -2069,7 +2125,7 @@ Item {
           rows.push(favoriteRow)
         }
 
-        var setupExtension = MenuModel.firstSetupExtension(root.extensions)
+        var setupExtension = MenuModel.firstSetupExtension(root.enabledExtensions)
         if (setupExtension) {
           var dependencySetup = MenuModel.dependencySetup(setupExtension)
           var setupItem = root.normalizeItem("dependency.setup." + setupExtension.id, {
@@ -2388,10 +2444,51 @@ Item {
   function requestDeleteSelected() {
     if (!root.cursorActive || root.selectedIndex < 0 || root.selectedIndex >= displayModel.count) return
     var row = displayModel.get(root.selectedIndex)
-    if (!row || row.kind !== "app") return
+    if (!row) return
+    if (root.activeMenu === "extensions" && !root.filterText) {
+      var capability = MenuModel.extensionRootCapability(row.itemId)
+      if (!capability || !capabilities.loaded) return
+      // A configured value is the user's, not the launcher's, to change.
+      if (MenuModel.capabilityLockedByConfig(capability, root.configuredCapabilities)) return
+      var listed = root.extensionByCapabilityIncludingDisabled(capability)
+      root.capabilityTarget = {
+        capability: capability,
+        label: listed ? listed.label : capability,
+        bundled: !listed || listed.bundled === true,
+        pluginId: listed && !listed.bundled ? listed.id : "",
+        disabled: root.isCapabilityDisabled(capability)
+      }
+      capabilityConfirm.selectedIndex = 1
+      root.capabilityConfirmOpen = true
+      return
+    }
+    if (row.kind !== "app") return
     root.deleteTarget = { appId: row.appId, label: row.label }
     deleteConfirm.selectedIndex = 1
     root.deleteConfirmOpen = true
+  }
+
+  function extensionByCapabilityIncludingDisabled(capability) {
+    for (var i = 0; i < root.extensions.length; i++)
+      if (root.extensions[i].capability === capability) return root.extensions[i]
+    return null
+  }
+
+  function cancelCapabilityToggle() {
+    root.capabilityConfirmOpen = false
+    root.capabilityTarget = null
+    root.disarmPointer()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function confirmCapabilityToggle() {
+    var target = root.capabilityTarget
+    root.capabilityConfirmOpen = false
+    root.capabilityTarget = null
+    if (!target) return
+    root.pendingStarSelectionId = MenuModel.extensionRootId(target.capability)
+    capabilities.setDisabled(target.capability, !target.disabled)
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   function cancelDelete() {
@@ -2729,7 +2826,7 @@ Item {
     onTriggered: {
       var revision = root.extensionQuerySerial
       var query = root.effectiveExtensionQuery()
-      var queryCatalog = root.focusedExtension ? [root.focusedExtension] : root.extensions
+      var queryCatalog = root.focusedExtension ? [root.focusedExtension] : root.enabledExtensions
       var extension = MenuModel.queryExtension(queryCatalog, query)
       if (!extension || revision !== root.extensionQuerySerial) return
       root.resultExtension = extension
@@ -2832,6 +2929,7 @@ Item {
         var oldWorkflowNode = root.workflowNode
         var oldWorkflowStack = root.workflowStack
         root.extensions = catalog.extensions
+        root.configuredCapabilities = catalog.configuredCapabilities || ({})
 
         if (focusedCapability) {
           var refreshedFocus = root.extensionByCapability(focusedCapability) || root.extensionById(focusedId)
@@ -2984,6 +3082,24 @@ Item {
       // in the same window are already represented by the eventual snapshot.
       if (root.providersLoaded["apps"] && !appRowsMergeDebounce.running)
         appRowsMergeDebounce.start()
+    }
+  }
+
+  Connections {
+    target: capabilities
+    function onChanged() {
+      if (!root.opened || root.dmenuActive) return
+      var selectedId = root.pendingStarSelectionId
+      root.pendingStarSelectionId = ""
+      root.rebuildDisplay()
+      if (!selectedId) return
+      for (var i = 0; i < displayModel.count; i++) {
+        if (displayModel.get(i).itemId !== selectedId) continue
+        root.selectedIndex = i
+        root.cursorActive = true
+        root.revealCursor()
+        break
+      }
     }
   }
 
@@ -3269,7 +3385,7 @@ Item {
       Item {
         id: keyCatcher
         anchors.fill: parent
-        z: (root.deleteConfirmOpen || root.dependencyConfirmOpen) ? 20 : 0
+        z: (root.deleteConfirmOpen || root.dependencyConfirmOpen || root.capabilityConfirmOpen) ? 20 : 0
         focus: true
 
         Keys.priority: Keys.BeforeItem
@@ -3280,6 +3396,10 @@ Item {
           }
           if (root.dependencyConfirmOpen) {
             if (dependencyConfirm.handleKey(event)) event.accepted = true
+            return
+          }
+          if (root.capabilityConfirmOpen) {
+            if (capabilityConfirm.handleKey(event)) event.accepted = true
             return
           }
 
@@ -3377,6 +3497,35 @@ Item {
           cornerRadius: root.cornerRadius
           onCanceled: root.cancelDelete()
           onConfirmed: root.confirmDelete()
+        }
+
+        ConfirmDialog {
+          id: capabilityConfirm
+
+          anchors.fill: parent
+          opened: root.capabilityConfirmOpen
+          z: 12
+          message: root.capabilityTarget
+            ? (root.capabilityTarget.disabled
+              ? ("Enable " + root.capabilityTarget.label + " again?")
+              : ("Disable " + root.capabilityTarget.label + "?\n\n"
+                + "It will leave Extensions, global search, and its prefix. Select it here and press Delete to switch it back on."
+                + (root.capabilityTarget.bundled
+                  ? ""
+                  : "\n\nThe plugin stays installed. Remove it entirely with:\nomarchy plugin remove "
+                    + root.capabilityTarget.pluginId)))
+            : ""
+          cancelText: "Cancel"
+          confirmText: root.capabilityTarget && root.capabilityTarget.disabled ? "Enable" : "Disable"
+          background: root.background
+          foreground: root.foreground
+          scrim: root.scrim
+          selectedBackground: root.selectedBackground
+          selectedText: root.selectedText
+          fontFamily: root.fontFamily
+          cornerRadius: root.cornerRadius
+          onCanceled: root.cancelCapabilityToggle()
+          onConfirmed: root.confirmCapabilityToggle()
         }
 
         ConfirmDialog {
@@ -3652,6 +3801,7 @@ Item {
               required property string action
               required property int childCount
               required property bool starred
+              required property bool disabled
 
               readonly property bool hasCursor: root.cursorActive && row.index === root.selectedIndex
               readonly property bool isApp: row.kind === "app"
@@ -3659,7 +3809,7 @@ Item {
               readonly property bool hasIcon: row.icon.length > 0 || row.isApp || row.isImageFile
 
               width: ListView.view.width
-              height: root.rowHeightForDetail(row.detail)
+              height: root.rowHeightForDetail(row.detail, row.disabled)
               radius: root.cornerRadius
               color: row.hasCursor ? root.selectedBackground : "transparent"
               borderSpec: row.hasCursor ? root.selectedBorderSpec : Border.none()
@@ -3744,6 +3894,9 @@ Item {
                   width: parent.width
                   text: row.label
                   color: row.hasCursor ? root.selectedText : root.foreground
+                  // A switched-off extension has to read as switched off
+                  // without being selected or searched for.
+                  opacity: row.disabled ? 0.55 : 1
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.heading
                   font.weight: Font.Medium
@@ -3753,7 +3906,7 @@ Item {
                 Text {
                   width: parent.width
                   text: row.detail
-                  visible: (root.filterText || row.kind === "dmenu" || row.itemId === "extension.result.pending") && row.detail.length > 0
+                  visible: (root.filterText || row.disabled || row.kind === "dmenu" || row.itemId === "extension.result.pending") && row.detail.length > 0
                   color: root.foreground
                   opacity: 0.52
                   font.family: root.fontFamily

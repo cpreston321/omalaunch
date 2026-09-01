@@ -762,7 +762,13 @@ function extensionRootCapability(itemId) {
   } catch (e) { return "" }
 }
 
-function extensionRootItem(extension) {
+function extensionRootDetail(extension, disabled, lockedByConfig) {
+  if (disabled) return lockedByConfig ? "Disabled in configuration" : "Disabled · Press Delete to enable"
+  if (!extension.available) return unavailableExtensionDetail(extension)
+  return extension.rootDescription
+}
+
+function extensionRootItem(extension, disabled, lockedByConfig) {
   if (!extension || !extension.capability) return null
   var id = extensionRootId(extension)
   if (!id) return null
@@ -771,7 +777,7 @@ function extensionRootItem(extension) {
     icon: extension.icon,
     iconFont: extension.iconFont,
     label: extension.label,
-    description: extension.available ? extension.rootDescription : unavailableExtensionDetail(extension),
+    description: extensionRootDetail(extension, disabled === true, lockedByConfig === true),
     aliases: [extension.id, extension.capability].concat(extension.prefixes || []),
     action: extension.capability
   })
@@ -951,6 +957,26 @@ function lookupKey(value) {
 // A disabled capability is dropped before resolution rather than after, so it
 // leaves no shortcut, no prefix, and no provider to fall back to — a bundled
 // extension is always on disk, so this is the only way to remove one.
+// A capability whose `enabled` is written out in config.jsonc is pinned there:
+// the launcher's own toggle must not fight a value the user typed.
+function capabilityLockedByConfig(capability, configuredCapabilities) {
+  var configured = configuredCapabilities && typeof configuredCapabilities === "object"
+    ? configuredCapabilities : ({})
+  var setting = configured[String(capability || "")]
+  return !!setting && typeof setting === "object" && typeof setting.enabled === "boolean"
+}
+
+// Same objects, filtered — never copies. Callers compare extension identity
+// across catalog reloads, so a new object per evaluation would break rebinding.
+function enabledExtensions(extensions, disabledCapabilities) {
+  var values = Array.isArray(extensions) ? extensions : []
+  var disabled = disabledCapabilitySet(disabledCapabilities)
+  var result = []
+  for (var i = 0; i < values.length; i++)
+    if (values[i] && !disabled[lookupKey(values[i].capability)]) result.push(values[i])
+  return result
+}
+
 function disabledCapabilitySet(disabledCapabilities) {
   var disabled = ({})
   var values = Array.isArray(disabledCapabilities) ? disabledCapabilities : []
@@ -1053,6 +1079,10 @@ function parseExtensionCatalog(text) {
   var capabilityConfig = parsed && typeof parsed.capabilityConfig === "object" && !Array.isArray(parsed.capabilityConfig)
     ? parsed.capabilityConfig : ({})
   var disabledCapabilities = parsed && Array.isArray(parsed.disabledCapabilities) ? parsed.disabledCapabilities : []
+  var configuredCapabilities = parsed && parsed.omalaunchConfig && typeof parsed.omalaunchConfig === "object"
+    && parsed.omalaunchConfig.capabilities && typeof parsed.omalaunchConfig.capabilities === "object"
+    && !Array.isArray(parsed.omalaunchConfig.capabilities)
+    ? parsed.omalaunchConfig.capabilities : ({})
   var extensions = []
   var ids = ({})
   if (values.length > MAX_EXTENSION_CATALOG_VALUES)
@@ -1091,7 +1121,13 @@ function parseExtensionCatalog(text) {
       else prefixes[prefixKey] = current.id + " (" + (current.source || "unknown source") + ")"
     }
   }
-  return { extensions: resolved, diagnostics: diagnostics, valid: true, complete: complete }
+  return {
+    extensions: resolved,
+    diagnostics: diagnostics,
+    configuredCapabilities: configuredCapabilities,
+    valid: true,
+    complete: complete
+  }
 }
 
 function parseExtensions(text) {
@@ -1769,6 +1805,9 @@ function displayRow(items, itemOrder, checkedResults, entry, detail, score, sect
     score: score || 0,
     section: section || "",
     starred: false,
+    // Every row carries the role so the ListModel's role set stays uniform
+    // regardless of which build path produced the row.
+    disabled: false,
     matchPriority: 0,
     usageCount: 0,
     lastUsedAt: 0
@@ -1909,6 +1948,7 @@ function actionBarHints(state) {
     hints.push({ label: "Copy Path", shortcut: "Ctrl C" })
   }
   if (value.canStar) hints.push({ label: value.starred ? "Unstar" : "Star", shortcut: "Ctrl S" })
+  if (value.canToggleCapability) hints.push({ label: value.capabilityDisabled ? "Enable" : "Disable", shortcut: "Del" })
 
   return hints
 }
@@ -1976,6 +2016,7 @@ if (typeof module !== "undefined") {
     extensionRootId: extensionRootId,
     extensionRootCapability: extensionRootCapability,
     extensionRootItem: extensionRootItem,
+    extensionRootDetail: extensionRootDetail,
     sortExtensionRootRows: sortExtensionRootRows,
     extensionRootActivation: extensionRootActivation,
     extensionRouteCapability: extensionRouteCapability,
@@ -1985,6 +2026,8 @@ if (typeof module !== "undefined") {
     normalizeExtension: normalizeExtension,
     resolveExtensions: resolveExtensions,
     disabledCapabilitySet: disabledCapabilitySet,
+    enabledExtensions: enabledExtensions,
+    capabilityLockedByConfig: capabilityLockedByConfig,
     parseExtensionCatalog: parseExtensionCatalog,
     parseExtensions: parseExtensions,
     matchesRules: matchesRules,

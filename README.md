@@ -186,9 +186,13 @@ Omalaunch core settings live in the dedicated `~/.config/omarchy/omalaunch/confi
 
 ### Turning an extension off
 
-Bundled extensions — Calculator, Currency conversion, Emoji, Files, and Timezone — ship enabled and are not installed, so there is nothing to uninstall. Switch one off with `"enabled": false` on its capability. It then leaves no shortcut in **Extensions**, no prefix, and no search entry. Remove the key, or set it to true, to bring it back on the next launcher open; a `provider` selection saved alongside it is preserved either way.
+Bundled extensions — Calculator, Currency conversion, Emoji, Files, and Timezone — ship enabled and are not installed, so there is nothing to uninstall.
 
-The capability names are `calculator`, `currency`, `emoji`, `files`, and `timezone`. External extensions can be switched off the same way, or removed entirely with `omarchy plugin remove`.
+The quickest way to turn one off is from the launcher: open **Extensions**, select the row, and press Delete. The row stays listed but dimmed and marked, so pressing Delete again switches it back on. Everywhere else — the starting view, search, its prefix — it disappears. This is stored in `~/.local/state/omarchy/omalaunch-capabilities.json`, next to your favorites and usage history.
+
+`config.jsonc` can do the same with `"enabled": false`, which also removes the row from **Extensions** entirely. A capability written out there is pinned: its row reads **Disabled in configuration** and Delete leaves it alone, so a configured value is never overridden by a keypress.
+
+The capability names are `calculator`, `currency`, `emoji`, `files`, and `timezone`. External extensions can be switched off the same way; disabling leaves the plugin installed, and `omarchy plugin remove <id>` removes it entirely.
 
 Each capability has an independent configuration file. For example, include files ignored by Git in Files browsing and search with `extensions/files.jsonc`:
 

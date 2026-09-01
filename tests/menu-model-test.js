@@ -902,6 +902,57 @@ const configuredProviderCatalog = menu.parseExtensionCatalog(JSON.stringify({
 }))
 assert(configuredProviderCatalog.extensions[0].id === 'chosen-files' && configuredProviderCatalog.extensions[0].config.includeGitIgnored === true,
   'provider configuration selects an available id and capability configuration follows capability identity')
+// ---- switching a capability off from the Extensions row ----
+
+const rowExtensions = [
+  { capability: 'emoji', id: 'omalaunch.emoji', label: 'Emoji', available: true, rootDescription: 'Search and paste emoji', prefixes: ['emoji'], bundled: true },
+  { capability: 'files', id: 'omalaunch.files', label: 'Files', available: true, rootDescription: 'Browse files', prefixes: ['files'], bundled: true }
+]
+const remaining = menu.enabledExtensions(rowExtensions, ['emoji'])
+assert(remaining.length === 1 && remaining[0] === rowExtensions[1],
+  'the enabled subset filters without copying, so extension identity survives a reload')
+assert(menu.enabledExtensions(rowExtensions, []).length === 2, 'nothing is filtered without a disabled capability')
+assert(menu.enabledExtensions(rowExtensions, 'emoji').length === 2, 'a non-array disabled list is ignored')
+
+assert(menu.capabilityLockedByConfig('emoji', { emoji: { enabled: false } }),
+  'an explicit enabled in configuration pins the capability')
+assert(menu.capabilityLockedByConfig('emoji', { emoji: { enabled: true } }),
+  'a pin holds whichever way it was written')
+assert(!menu.capabilityLockedByConfig('emoji', { emoji: { provider: 'p' } }),
+  'a provider selection alone does not pin the capability')
+assert(!menu.capabilityLockedByConfig('emoji', {}) && !menu.capabilityLockedByConfig('emoji', null),
+  'an unconfigured capability is not pinned')
+
+assert(menu.extensionRootDetail(rowExtensions[0], false, false) === 'Search and paste emoji',
+  'an enabled extension keeps its own description')
+assert(menu.extensionRootDetail(rowExtensions[0], true, false) === 'Disabled · Press Delete to enable',
+  'a disabled row says how to switch it back on')
+assert(menu.extensionRootDetail(rowExtensions[0], true, true) === 'Disabled in configuration',
+  'a config-pinned row does not promise a key that would not work')
+assert(menu.extensionRootItem(rowExtensions[0], true, false).description === 'Disabled · Press Delete to enable',
+  'the Extensions row carries the disabled detail')
+assert(menu.extensionRootItem(rowExtensions[0]).description === 'Search and paste emoji',
+  'omitting the disabled arguments keeps the previous behavior')
+
+const toggleHints = menu.actionBarHints({ hasSelection: true, canToggleCapability: true, capabilityDisabled: false })
+assert(toggleHints.some(hint => hint.label === 'Disable' && hint.shortcut === 'Del'),
+  'an enabled extension row offers Disable')
+assert(menu.actionBarHints({ hasSelection: true, canToggleCapability: true, capabilityDisabled: true })
+  .some(hint => hint.label === 'Enable' && hint.shortcut === 'Del'),
+  'a disabled extension row offers Enable')
+assert(!menu.actionBarHints({ hasSelection: true }).some(hint => hint.shortcut === 'Del'),
+  'rows that are not extensions offer no capability toggle')
+
+const configuredCatalog = menu.parseExtensionCatalog(JSON.stringify({
+  extensions: [{ schemaVersion: 1, id: 'keeper', capability: 'files', mode: 'files', label: 'Files', prefixes: ['files'], command: ['true'] }],
+  omalaunchConfig: { version: 1, capabilities: { files: { enabled: true }, emoji: { provider: 'p' } } }
+}))
+assert(menu.capabilityLockedByConfig('files', configuredCatalog.configuredCapabilities)
+  && !menu.capabilityLockedByConfig('emoji', configuredCatalog.configuredCapabilities),
+  'the catalog reports which capabilities configuration pinned')
+assert(Object.keys(menu.parseExtensionCatalog('[]').configuredCapabilities).length === 0,
+  'a catalog without configuration reports no pinned capabilities')
+
 // ---- disabling a capability ----
 
 const disabledCatalog = menu.parseExtensionCatalog(JSON.stringify({
