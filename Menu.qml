@@ -81,6 +81,9 @@ Item {
   // Capabilities the user configured explicitly, so the launcher's own toggle
   // can defer to a value they typed.
   property var configuredCapabilities: ({})
+  // Set in config.jsonc under `launcher`, so the size can be tuned without a
+  // code change. Defaults live in MenuModel.
+  property var launcherSize: MenuModel.launcherSize(null)
   // Search, prefixes, live queries, and activation all work from the enabled
   // subset. The full list survives only so Extensions can still list a
   // disabled row for switching it back on.
@@ -147,6 +150,11 @@ Item {
   property var workflowStack: []
   property int workflowGeneration: 0
 
+  property bool clipboardPickerActive: false
+  property var clipboardExtension: null
+  // Read, never written: Omarchy's capture owns this file.
+  property var clipboardHistory: []
+
   property bool emojiPickerActive: false
   property var emojiExtension: null
   // The dataset is static, so it is parsed once per catalog rather than per
@@ -181,6 +189,21 @@ Item {
   readonly property string selectedFilePath: root.selectedFileRow ? String(root.selectedFileRow.action || "") : ""
   readonly property bool imagePreviewActive: MenuModel.isImagePath(root.selectedFilePath)
   readonly property int previewPaneWidth: Style.space(280)
+
+  // Clipboard detail. The row list carries icon and title only; everything
+  // known about an entry goes in the pane beside it.
+  readonly property var selectedClipboardEntry: root.clipboardPickerActive && root.cursorActive
+    && root.selectedIndex >= 0 && root.selectedIndex < displayModel.count
+    ? root.clipboardEntryAt(root.clipboardRowIndex(displayModel.get(root.selectedIndex).itemId)) : null
+  readonly property bool clipboardDetailActive: !!root.selectedClipboardEntry
+  readonly property string clipboardDetailBody: MenuModel.clipboardEntryBody(root.selectedClipboardEntry)
+  readonly property var clipboardDetailMetadata: MenuModel.clipboardEntryMetadata(root.selectedClipboardEntry)
+  readonly property bool clipboardDetailImage: !!root.selectedClipboardEntry
+    && root.selectedClipboardEntry.kind === "image"
+
+  // Both panes share the card's right-hand column, so the reservation is one
+  // property rather than an imagePreviewActive test repeated at each use.
+  readonly property bool detailPaneActive: root.imagePreviewActive || root.clipboardDetailActive
 
   // Shared application engine (entries, hidden filters, icons, launch,
   // removal), owned by the shell and also used by the standalone launcher.
@@ -277,6 +300,16 @@ Item {
   readonly property int emojiSectionHeight: Math.max(Style.space(26), Style.font.bodySmall + Style.spacing.md)
   // Resolved independently of an active session so the files can load as soon
   // as the catalog settles.
+  readonly property string stateHome: Quickshell.env("XDG_STATE_HOME")
+    || (Quickshell.env("HOME") + "/.local/state")
+  readonly property var clipboardProvider: root.extensionForMode("clipboard", "clipboard")
+  readonly property var clipboardHistoryPaths: MenuModel.clipboardHistoryPaths(root.clipboardProvider,
+    root.stateHome, root.omarchyPath)
+  property int clipboardHistoryCandidate: 0
+  readonly property string clipboardHistoryPath: root.clipboardHistoryCandidate < root.clipboardHistoryPaths.length
+    ? root.clipboardHistoryPaths[root.clipboardHistoryCandidate] : ""
+  onClipboardHistoryPathsChanged: root.clipboardHistoryCandidate = 0
+
   readonly property var emojiProvider: root.emojiExtensionForCapability("emoji")
   // Each file is a list of candidates read in order, so the picker survives
   // the provider's preferred source disappearing.
@@ -303,15 +336,30 @@ Item {
       root.emojiColumns, favorites.starredIds, usage.records)
     : ({ cells: [], rows: [], sectioned: false })
 
+  // The launcher keeps one size, matching Omarchy's own panels (the clipboard
+  // overlay is 875x600), so it never resizes as results come and go or as the
+  // detail pane opens. A card that changes shape on every keystroke is the
+  // thing that reads as jitter.
+  //
+  // dmenu keeps its dynamic sizing: the caller states a width, and a select
+  // prompt with three options should not be a full-height panel.
+  readonly property int fixedCardWidth: Style.space(root.launcherSize.width)
+  readonly property int fixedCardHeight: Style.space(root.launcherSize.height)
+  readonly property int cardChromeHeight: contentMargin + actionBarBottomPadding
+    + headerHeight + actionBarHeight + contentSpacing * 2
+
   property int cardWidth: Math.min(root.dmenuActive
     ? Style.space(root.dmenuWidth)
-    : Style.space(root.imagePreviewActive ? 900 : 600), panel.width - Style.gapsOut * 2)
+    : root.fixedCardWidth, panel.width - Style.gapsOut * 2)
   readonly property bool emptyRoot: !root.dmenuActive && !root.emojiPickerActive && root.activeMenu === "root" && !root.filterText && displayModel.count === 0
-  property int visibleRowsHeight: root.emptyRoot || root.workflowInputActive ? 0
-    : (root.emojiPickerActive ? emojiGridHeight(layoutSerial, emojiRowModel.count)
-      : (root.dmenuActive ? dmenuRowListHeight(layoutSerial, displayModel.count, filterText) : rowListHeight(layoutSerial, displayModel.count, filterText, searchDivider)))
-  property int cardHeight: Math.min(contentMargin + actionBarBottomPadding + headerHeight + actionBarHeight + contentSpacing
-    + (visibleRowsHeight > 0 ? contentSpacing + visibleRowsHeight : 0), panel.height - Style.gapsOut * 2)
+  property int cardHeight: root.dmenuActive
+    ? Math.min(contentMargin + actionBarBottomPadding + headerHeight + actionBarHeight + contentSpacing
+      + (visibleRowsHeight > 0 ? contentSpacing + visibleRowsHeight : 0), panel.height - Style.gapsOut * 2)
+    : Math.min(root.fixedCardHeight, panel.height - Style.gapsOut * 2)
+  // Rows fill whatever the fixed card leaves rather than deciding its height.
+  property int visibleRowsHeight: root.dmenuActive
+    ? dmenuRowListHeight(layoutSerial, displayModel.count, filterText)
+    : (root.workflowInputActive ? 0 : Math.max(0, root.cardHeight - root.cardChromeHeight))
 
   // The emoji picker owns its own grid model, so selection-dependent state
   // resolves against whichever model is on screen. Every model read stays
@@ -324,7 +372,7 @@ Item {
   // Capability toggling is offered only on an unfiltered Extensions row, and
   // never for a capability whose value is pinned in configuration.
   readonly property string toggleableCapability: !root.dmenuActive && !root.emojiPickerActive
-    && !root.fileBrowserActive && !root.workflowActive && !root.actionPanelActive
+    && !root.clipboardPickerActive && !root.fileBrowserActive && !root.workflowActive && !root.actionPanelActive
     && root.activeMenu === "extensions" && !root.filterText && capabilities.loaded
     && displayModel.count > 0 && root.cursorActive
     && root.selectedIndex >= 0 && root.selectedIndex < displayModel.count
@@ -342,11 +390,13 @@ Item {
     directoryPickerActive: root.directoryPickerActive,
     actionPanelActive: root.actionPanelActive,
     emojiPickerActive: root.emojiPickerActive,
+    clipboardPickerActive: root.clipboardPickerActive,
     focusedExtension: !!root.focusedExtension,
     hasSelection: root.selectionCount > 0 && root.cursorActive,
     canStar: root.emojiPickerActive
       ? (!!root.selectedEmojiRow && favorites.loaded)
       : (!root.dmenuActive && !root.workflowActive && !root.actionPanelActive
+        && !root.clipboardPickerActive
         && displayModel.count > 0 && root.cursorActive && root.selectedIndex >= 0
         && root.selectedIndex < displayModel.count
         && (root.fileBrowserActive || (displayModel.get(root.selectedIndex).itemId !== "omarchy"
@@ -797,6 +847,7 @@ Item {
     if (activation === "files") root.enterFileBrowser(extension)
     else if (activation === "workflow") root.enterWorkflow(extension)
     else if (activation === "emoji") root.enterEmojiPicker(extension)
+    else if (activation === "clipboard") root.enterClipboardPicker(extension)
     else if (activation === "input") root.enterFocusedExtension(extension)
   }
 
@@ -1065,16 +1116,193 @@ Item {
   }
 
   // ------------------------------------------------------------------
+  // Clipboard history. Rows rather than a grid: the payload is text, so the
+  // existing result list already renders it correctly.
+  // ------------------------------------------------------------------
+
+  function loadClipboardHistory(raw) {
+    var values = MenuModel.parseClipboardHistory(raw)
+    if (values.length === 0 && root.clipboardHistoryCandidate + 1 < root.clipboardHistoryPaths.length) {
+      root.clipboardHistoryCandidate += 1
+      root.advanceEmojiCandidate(root.clipboardHistoryCandidate - 1,
+        root.clipboardHistoryPaths.length, clipboardHistoryFile)
+      return
+    }
+    root.clipboardHistory = values
+    if (root.clipboardPickerActive) root.rebuildClipboardDisplay()
+  }
+
+  function enterClipboardPicker(extension) {
+    if (!extension || !extension.available) return
+    root.invalidateExtensionQuery("entered clipboard history")
+    if (root.emojiPickerActive) root.leaveEmojiPicker(false)
+    root.focusedExtension = null
+    root.leaveFileBrowser(false)
+    root.clipboardPickerActive = true
+    root.clipboardExtension = extension
+    root.filterText = ""
+    root.selectedIndex = 0
+    root.cursorActive = true
+    root.rebuildClipboardDisplay()
+  }
+
+  function leaveClipboardPicker(rebuild) {
+    if (rebuild !== false && root.routedExtensionSession) {
+      root.cancel()
+      return
+    }
+    root.clipboardPickerActive = false
+    root.clipboardExtension = null
+    root.filterText = ""
+    root.selectedIndex = 0
+    if (rebuild !== false) root.rebuildDisplay()
+  }
+
+  function rebuildClipboardDisplay() {
+    displayModel.clear()
+    root.searchDivider = false
+    var rows = MenuModel.clipboardRows(root.clipboardHistory, root.filterText)
+    for (var i = 0; i < rows.length; i++) {
+      var entry = rows[i]
+      var item = root.normalizeItem("clipboard.item." + entry.index, {
+        icon: entry.kind === "image" ? "󰋩" : (entry.kind === "file" ? "󰈔" : "󰅍"),
+        label: entry.preview,
+        description: entry.detail,
+        // The image path drives the delegate's thumbnail; the paste itself
+        // always goes through the history index, never through this value.
+        action: entry.kind === "image" ? entry.path : ""
+      })
+      // No subtitle: the pane beside the list carries the detail now, so the
+      // list stays one line per entry.
+      var row = root.displayRow(item, "", i)
+      // normalizeItem classifies an item with no action as a submenu, which
+      // draws a chevron. A clipboard entry is a leaf: the paste command is
+      // built from the history index, not from the row's action.
+      row.kind = "action"
+      displayModel.append(row)
+    }
+    root.layoutSerial += 1
+    if (displayModel.count === 0) root.selectedIndex = 0
+    else if (root.selectedIndex >= displayModel.count) root.selectedIndex = displayModel.count - 1
+    else if (root.selectedIndex < 0) root.selectedIndex = 0
+    root.cursorActive = displayModel.count > 0
+    Qt.callLater(function() { if (displayModel.count > 0) root.revealCursor() })
+  }
+
+  function clipboardRowIndex(itemId) {
+    var value = String(itemId || "")
+    if (value.indexOf("clipboard.item.") !== 0) return -1
+    var index = Number(value.substring("clipboard.item.".length))
+    return isFinite(index) && index >= 0 ? index : -1
+  }
+
+  function clipboardEntryAt(historyIndex) {
+    for (var i = 0; i < root.clipboardHistory.length; i++)
+      if (root.clipboardHistory[i].index === historyIndex) return root.clipboardHistory[i]
+    return null
+  }
+
+  // Text always goes through the history index so no clipboard content ever
+  // reaches a command line, where a process listing would expose it. Only a
+  // file entry passes a path, which is not the content itself.
+  function clipboardCommandFor(entry, copyOnly) {
+    var extension = root.clipboardExtension
+    if (!extension || !entry) return []
+    if (entry.kind === "file" && entry.path) {
+      var fileCommand = copyOnly ? extension.fileCopyCommand : extension.fileCommand
+      if (fileCommand.length > 0)
+        return root.commandArguments(fileCommand, { path: entry.path, mime: entry.mime })
+    }
+    if (entry.kind === "image" && entry.path) {
+      var imageCommand = copyOnly ? extension.fileCopyCommand : extension.fileCommand
+      if (imageCommand.length > 0)
+        return root.commandArguments(imageCommand, { path: entry.path, mime: entry.mime })
+    }
+    var command = copyOnly ? extension.copyCommand : extension.command
+    if (command.length === 0) return []
+    return root.commandArguments(command, { index: String(entry.index) })
+  }
+
+  function activateClipboardIndex(index) {
+    if (!root.clipboardPickerActive || index < 0 || index >= displayModel.count) return
+    var entry = root.clipboardEntryAt(root.clipboardRowIndex(displayModel.get(index).itemId))
+    var command = root.clipboardCommandFor(entry, false)
+    if (command.length === 0) return
+    usage.record("clipboard.paste")
+    // The paste helper types into whatever regains focus, so close first.
+    root.leaveClipboardPicker(false)
+    root.applySerial = root.requestSerial
+    root.opened = false
+    Quickshell.execDetached(command)
+  }
+
+  function copySelectedClipboardEntry() {
+    if (!root.clipboardPickerActive || !root.cursorActive) return
+    if (root.selectedIndex < 0 || root.selectedIndex >= displayModel.count) return
+    var entry = root.clipboardEntryAt(root.clipboardRowIndex(displayModel.get(root.selectedIndex).itemId))
+    var command = root.clipboardCommandFor(entry, true)
+    if (command.length === 0) return
+    Quickshell.execDetached(command)
+    root.emojiCopyFeedback = "Copied"
+    emojiCopyFeedbackTimer.restart()
+  }
+
+  function handleClipboardKey(event) {
+    if (event.key === Qt.Key_Escape) {
+      if (root.filterText) root.setFilter("")
+      else root.leaveClipboardPicker()
+      return true
+    }
+    if (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) {
+      root.copySelectedClipboardEntry()
+      return true
+    }
+    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+      if (event.modifiers & Qt.ControlModifier) root.copySelectedClipboardEntry()
+      else if (root.cursorActive) root.activateClipboardIndex(root.selectedIndex)
+      else if (displayModel.count > 0) root.cursorActive = true
+      return true
+    }
+    if (Util.editsFilter(event, root.filterText)) {
+      root.setFilter(Util.editedFilter(event, root.filterText))
+      return true
+    }
+    if ((event.key === Qt.Key_Backspace || event.key === Qt.Key_Left) && !root.filterText) {
+      root.leaveClipboardPicker()
+      return true
+    }
+    if (event.key === Qt.Key_Up) { root.select(-1); return true }
+    if (event.key === Qt.Key_Down) { root.select(1); return true }
+    if (event.key === Qt.Key_PageUp) { root.select(-6); return true }
+    if (event.key === Qt.Key_PageDown) { root.select(6); return true }
+    if ((event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)
+        && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))) {
+      root.select(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? -1 : 1)
+      return true
+    }
+    if (event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127
+        && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)) {
+      root.setFilter(root.filterText + event.text)
+      return true
+    }
+    return false
+  }
+
+  // ------------------------------------------------------------------
   // Emoji picker. A grid rather than the row list: emoji are recognized by
   // their glyph, so a column of labelled rows would waste the whole card.
   // ------------------------------------------------------------------
 
-  function emojiExtensionForCapability(capability) {
+  function extensionForMode(mode, capability) {
     for (var i = 0; i < root.enabledExtensions.length; i++) {
       var extension = root.enabledExtensions[i]
-      if (extension && extension.mode === "emoji" && extension.capability === capability) return extension
+      if (extension && extension.mode === mode && extension.capability === capability) return extension
     }
     return null
+  }
+
+  function emojiExtensionForCapability(capability) {
+    return root.extensionForMode("emoji", capability)
   }
 
   // The favorites/usage arguments exist so the binding re-evaluates when a pin
@@ -1906,6 +2134,10 @@ Item {
       root.rebuildActionPanel()
       return
     }
+    if (root.clipboardPickerActive) {
+      root.rebuildClipboardDisplay()
+      return
+    }
     if (root.emojiPickerActive) {
       root.rebuildEmojiDisplay()
       return
@@ -2279,6 +2511,10 @@ Item {
     root.selectedIndex = 0
     root.cursorActive = root.mode !== "input"
     root.disarmPointer()
+    if (root.clipboardPickerActive) {
+      root.rebuildClipboardDisplay()
+      return
+    }
     if (root.emojiPickerActive) {
       root.emojiCopyFeedback = ""
       root.rebuildEmojiDisplay()
@@ -2300,6 +2536,7 @@ Item {
     if (!root.item(id)) id = "root"
     root.invalidateExtensionQuery("active menu changed")
     if (root.emojiPickerActive) root.leaveEmojiPicker(false)
+    if (root.clipboardPickerActive) root.leaveClipboardPicker(false)
     root.focusedExtension = null
     if (pushHistory && id !== root.activeMenu) root.navStack = root.navStack.concat([root.activeMenu])
     root.activeMenu = id
@@ -2344,6 +2581,10 @@ Item {
     if (index < 0 || index >= displayModel.count) return
 
     var row = displayModel.get(index)
+    if (root.clipboardPickerActive && root.clipboardRowIndex(row.itemId) >= 0) {
+      root.activateClipboardIndex(index)
+      return
+    }
     var rootExtension = root.extensionForRootId(row.itemId)
     if (rootExtension) {
       if (rootExtension.available) usage.record(row.itemId)
@@ -2375,6 +2616,7 @@ Item {
       if (preparedExtension && preparedExtension.mode === "files") root.enterFileBrowser(preparedExtension)
       else if (preparedExtension && preparedExtension.mode === "workflow") root.enterWorkflow(preparedExtension)
       else if (preparedExtension && preparedExtension.mode === "emoji") root.enterEmojiPicker(preparedExtension)
+      else if (preparedExtension && preparedExtension.mode === "clipboard") root.enterClipboardPicker(preparedExtension)
       else root.setFilter(row.action)
       Qt.callLater(function() { keyCatcher.forceActiveFocus() })
       return
@@ -2606,6 +2848,8 @@ Item {
     root.emojiExtension = null
     root.emojiCopyFeedback = ""
     emojiRowModel.clear()
+    root.clipboardPickerActive = false
+    root.clipboardExtension = null
     root.focusedExtension = null
     root.extensionQuery = ""
     root.extensionExpression = ""
@@ -2971,6 +3215,7 @@ Item {
         var oldWorkflowStack = root.workflowStack
         root.extensions = catalog.extensions
         root.configuredCapabilities = catalog.configuredCapabilities || ({})
+        if (catalog.launcherSize) root.launcherSize = catalog.launcherSize
 
         if (focusedCapability) {
           var refreshedFocus = root.extensionByCapability(focusedCapability) || root.extensionById(focusedId)
@@ -3272,6 +3517,16 @@ Item {
     onLoadFailed: root.loadEmojiData("")
   }
 
+  FileView {
+    id: clipboardHistoryFile
+    path: root.clipboardHistoryPath
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.loadClipboardHistory(text())
+    onLoadFailed: root.loadClipboardHistory("")
+    onFileChanged: clipboardHistoryFile.reload()
+  }
+
   // Supplementary glyphs appended to the dataset — currency signs, which the
   // emoji set does not carry at all.
   FileView {
@@ -3454,6 +3709,11 @@ Item {
             return
           }
 
+          if (root.clipboardPickerActive) {
+            if (root.handleClipboardKey(event)) event.accepted = true
+            return
+          }
+
           if (root.emojiPickerActive) {
             if (root.handleEmojiKey(event)) event.accepted = true
             return
@@ -3626,6 +3886,8 @@ Item {
             anchors.rightMargin: root.emojiPickerActive && emojiCaptionText.text ? emojiCaptionText.width + Style.space(12) : 0
             text: root.actionPanelActive
               ? ("Actions for " + ((root.actionPanelFile && root.actionPanelFile.name) || "file"))
+              : root.clipboardPickerActive
+                ? (root.filterText || "Search clipboard…")
               : root.emojiPickerActive
                 ? (root.filterText || "Search emoji…")
               : root.fileBrowserActive
@@ -3814,7 +4076,7 @@ Item {
             id: resultList
             visible: !root.emojiPickerActive
             anchors.fill: parent
-            anchors.rightMargin: root.imagePreviewActive ? root.previewPaneWidth + root.contentSpacing : 0
+            anchors.rightMargin: root.detailPaneActive ? root.previewPaneWidth + root.contentSpacing : 0
             model: displayModel
             clip: true
             spacing: root.rowSpacing
@@ -4040,6 +4302,117 @@ Item {
             }
           }
 
+          // Everything known about the selected clipboard entry: the content
+          // itself above, then its metadata as label/value pairs, the way
+          // Raycast reads them — what it is, how big, where it came from.
+          BorderSurface {
+            id: clipboardDetailPane
+            visible: root.clipboardDetailActive
+            width: root.previewPaneWidth
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            anchors.right: parent.right
+            radius: root.cornerRadius
+            color: Util.alpha(root.foreground, 0.035)
+            borderSpec: Border.none()
+            padding: Style.space(12)
+
+            Item {
+              anchors.fill: parent
+              anchors.leftMargin: clipboardDetailPane.contentLeftInset
+              anchors.rightMargin: clipboardDetailPane.contentRightInset
+              anchors.topMargin: clipboardDetailPane.contentTopInset
+              anchors.bottomMargin: clipboardDetailPane.contentBottomInset
+
+              Item {
+                id: clipboardDetailBody
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: clipboardDetailMeta.top
+                anchors.bottomMargin: Style.space(10)
+                clip: true
+
+                Image {
+                  visible: root.clipboardDetailImage
+                  anchors.fill: parent
+                  source: root.clipboardDetailImage && root.selectedClipboardEntry
+                    ? MenuModel.localFileUrl(root.selectedClipboardEntry.path) : ""
+                  fillMode: Image.PreserveAspectFit
+                  sourceSize.width: width * Screen.devicePixelRatio
+                  sourceSize.height: height * Screen.devicePixelRatio
+                  asynchronous: true
+                  cache: true
+                }
+
+                Text {
+                  visible: !root.clipboardDetailImage
+                  anchors.fill: parent
+                  textFormat: Text.PlainText
+                  text: root.clipboardDetailBody
+                  color: root.foreground
+                  opacity: 0.82
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                  elide: Text.ElideRight
+                  verticalAlignment: Text.AlignTop
+                }
+              }
+
+              Column {
+                id: clipboardDetailMeta
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                spacing: Style.space(4)
+
+                Rectangle {
+                  width: parent.width
+                  height: Style.spacing.hairline
+                  color: Util.alpha(root.foreground, 0.14)
+                }
+
+                Repeater {
+                  model: root.clipboardDetailMetadata
+
+                  Item {
+                    required property var modelData
+                    width: clipboardDetailMeta.width
+                    height: metaValue.implicitHeight
+
+                    Text {
+                      id: metaLabel
+                      text: modelData.label
+                      color: root.foreground
+                      opacity: 0.5
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      anchors.left: parent.left
+                      anchors.top: parent.top
+                    }
+
+                    Text {
+                      id: metaValue
+                      textFormat: Text.PlainText
+                      text: modelData.value
+                      color: root.foreground
+                      opacity: 0.82
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                      horizontalAlignment: Text.AlignRight
+                      elide: Text.ElideMiddle
+                      anchors.right: parent.right
+                      anchors.top: parent.top
+                      anchors.left: metaLabel.right
+                      anchors.leftMargin: Style.space(8)
+                    }
+                  }
+                }
+              }
+            }
+          }
+
           BorderSurface {
             id: previewPane
             visible: root.imagePreviewActive
@@ -4092,7 +4465,7 @@ Item {
           Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.rightMargin: root.imagePreviewActive ? root.previewPaneWidth + root.contentSpacing : 0
+            anchors.rightMargin: root.detailPaneActive ? root.previewPaneWidth + root.contentSpacing : 0
             anchors.top: parent.top
             height: Math.min(Style.space(28), parent.height / 2)
             visible: opacity > 0
@@ -4108,7 +4481,7 @@ Item {
           Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.rightMargin: root.imagePreviewActive ? root.previewPaneWidth + root.contentSpacing : 0
+            anchors.rightMargin: root.detailPaneActive ? root.previewPaneWidth + root.contentSpacing : 0
             anchors.bottom: parent.bottom
             height: Math.min(Style.space(28), parent.height / 2)
             visible: opacity > 0

@@ -800,6 +800,101 @@ assert(menu.calculationExpression('', true) === '', 'an empty expression stays e
 assert(menu.displayRow({}, [], {}, { id: 'x', kind: 'action' }, '', 0).value === '',
   'ordinary rows carry an empty value so the model role set stays uniform')
 
+// ---------------------------------------------------------------- clipboard
+
+const clipboardExtensions = menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'omalaunch.clipboard', capability: 'clipboard', mode: 'clipboard',
+  label: 'Clipboard History', prefixes: ['clip'],
+  command: ['omarchy-clipboard-paste-text', '--shift-insert', '--history-index', '{index}'],
+  copyCommand: ['omarchy-clipboard-paste-text', '--copy-only', '--history-index', '{index}']
+}]))
+assert(clipboardExtensions.length === 1 && clipboardExtensions[0].mode === 'clipboard',
+  'clipboard extensions are parsed')
+assert(clipboardExtensions[0].history.join('|') === '{stateHome}/omarchy/clipboard-history.json',
+  'clipboard extensions default to the history Omarchy writes')
+assert(menu.extensionRootActivation(clipboardExtensions[0]) === 'clipboard',
+  'clipboard extension roots open the history picker')
+assert(menu.clipboardHistoryPaths(clipboardExtensions[0], '/home/u/.local/state', '/usr/share/omarchy')[0]
+  === '/home/u/.local/state/omarchy/clipboard-history.json',
+  '{stateHome} expands in the history path')
+assert(menu.clipboardHistoryPaths(menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'bad', mode: 'clipboard', label: 'C', prefixes: ['c'],
+  history: ['{stateHome}/../escape.json'], command: ['true']
+}]))[0], '/home/u/.local/state', '/x').length === 0,
+  'a history path cannot escape with ..')
+assert(menu.clipboardHistoryPaths(extensions[0], '/s', '/o').length === 0,
+  'a non-clipboard extension has no history path')
+assert(menu.openStateReset().clipboardPickerActive === false
+  && menu.openStateReset().clipboardExtension === null,
+  'a new launcher session leaves the clipboard picker')
+
+const clipboardHistory = menu.parseClipboardHistory(JSON.stringify([
+  { type: 'text', text: 'hello world' },
+  { type: 'text', text: 'one\ntwo\nthree' },
+  { type: 'image', path: '/tmp/s.png', mime: 'image/png', capturedAt: '09:41' },
+  { type: 'text', text: 'file:///home/u/a.txt\nfile:///home/u/b.txt' },
+  { type: 'text', text: '   ' },
+  { type: 'other', text: 'ignored' },
+  'a bare string'
+]))
+assert(clipboardHistory.length === 5, 'blank and unknown-type entries are dropped')
+assert(clipboardHistory.map(e => e.kind).join('|') === 'text|text|image|file|text',
+  'each entry is classified by what it holds')
+assert(clipboardHistory[4].index === 6,
+  'an entry keeps its index in the original file, which is what the paste helper takes')
+assert(menu.parseClipboardHistory('{nope').length === 0
+  && menu.parseClipboardHistory('{}').length === 0
+  && menu.parseClipboardHistory('').length === 0,
+  'malformed history is ignored')
+
+const hugeEntry = menu.parseClipboardHistory(JSON.stringify([{ type: 'text', text: 'x'.repeat(20000) }]))
+assert(hugeEntry[0].text.length <= 8192,
+  'a large entry is capped, because scanning them all on every keystroke stalls the shell')
+
+assert(menu.clipboardFilePaths('file:///home/u/a.txt\nfile:///home/u/b.txt').length === 2
+  && menu.clipboardFilePaths('not a uri').length === 0
+  && menu.clipboardFilePaths('file://localhost/home/u/c.txt')[0] === '/home/u/c.txt',
+  'file URIs are decoded, including the localhost form')
+
+assert(menu.clipboardEntryPreview(clipboardHistory[1]) === 'one two three',
+  'a multi-line preview collapses to one line for the row')
+assert(menu.clipboardEntryPreview(clipboardHistory[2]) === 'Screenshot from 09:41',
+  'an image preview names what it is and when')
+assert(menu.clipboardEntryPreview(clipboardHistory[3]) === '2 files',
+  'several files are counted rather than listed in the row')
+
+assert(menu.clipboardEntryMetadata(clipboardHistory[1]).map(m => m.label).join('|')
+  === 'Type|Characters|Words|Lines',
+  'text metadata reads what it is then how big')
+assert(menu.clipboardEntryMetadata(clipboardHistory[0]).map(m => m.label).join('|') === 'Type|Characters|Words',
+  'a single-line entry has no line count')
+assert(menu.clipboardEntryMetadata(clipboardHistory[2]).map(m => m.label).join('|')
+  === 'Type|Format|Captured|Path',
+  'image metadata carries its format and origin')
+assert(menu.clipboardEntryMetadata(null).length === 0, 'no entry means no metadata')
+
+assert(menu.clipboardEntryBody(clipboardHistory[1]) === 'one\ntwo\nthree',
+  'the detail pane keeps the line breaks the row had to drop')
+assert(menu.clipboardEntryBody(clipboardHistory[2]) === '',
+  'an image has no text body; the pane shows the image itself')
+assert(menu.clipboardEntryBody(clipboardHistory[3]) === '/home/u/a.txt\n/home/u/b.txt',
+  'a file entry lists its paths in the pane')
+
+const clipboardShown = menu.clipboardRows(clipboardHistory, '')
+assert(clipboardShown.length === 5 && clipboardShown[0].index === 0, 'every entry becomes a row, newest first')
+assert(menu.clipboardRows(clipboardHistory, 'two').map(r => r.index).join('|') === '1',
+  'search is a plain substring, which is how a remembered fragment is found')
+assert(menu.clipboardRows(clipboardHistory, 'SCREENSHOT').map(r => r.index).join('|') === '2',
+  'search ignores case')
+assert(menu.clipboardRows(clipboardHistory, 'nothing here').length === 0, 'a miss yields no rows')
+assert(menu.clipboardRows(clipboardHistory, '', 2).length === 2, 'clipboard rows honour their limit')
+
+const clipboardHints = menu.actionBarHints({ clipboardPickerActive: true, hasSelection: true })
+assert(clipboardHints[0].label === 'Paste' && clipboardHints[0].shortcut === 'Enter',
+  'the clipboard picker pastes on Enter')
+assert(clipboardHints.some(h => h.label === 'Copy' && h.shortcut === 'Ctrl C'),
+  'the clipboard picker copies on Ctrl+C')
+
 // ---------------------------------------------------------------- emoji
 
 const emojiExtensions = menu.parseExtensions(JSON.stringify([{

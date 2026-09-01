@@ -535,6 +535,8 @@ function openStateReset() {
     routedExtensionSession: false,
     emojiPickerActive: false,
     emojiExtension: null,
+    clipboardPickerActive: false,
+    clipboardExtension: null,
     focusedExtension: null,
     extensionQuery: "",
     extensionExpression: "",
@@ -824,6 +826,7 @@ function extensionRootActivation(extension) {
   if (extension.mode === "files") return "files"
   if (extension.mode === "workflow") return "workflow"
   if (extension.mode === "emoji") return "emoji"
+  if (extension.mode === "clipboard") return "clipboard"
   return "input"
 }
 
@@ -860,7 +863,7 @@ function normalizeExtension(raw) {
   var label = String(raw.label || "").trim()
   var mode = String(raw.mode || "prefix")
   var command = stringArray(raw.command)
-  if (!id || !label || ["prefix", "query", "files", "workflow", "emoji"].indexOf(mode) < 0) return null
+  if (!id || !label || ["prefix", "query", "files", "workflow", "emoji", "clipboard"].indexOf(mode) < 0) return null
   if (mode !== "workflow" && command.length === 0) return null
 
   var priority = finiteExtensionNumber(raw.priority, 0)
@@ -884,7 +887,7 @@ function normalizeExtension(raw) {
     missingRequires: stringArray(raw._missingRequires)
   }
 
-  if (mode === "prefix" || mode === "files" || mode === "workflow" || mode === "emoji") {
+  if (mode === "prefix" || mode === "files" || mode === "workflow" || mode === "emoji" || mode === "clipboard") {
     var sourcePrefixes = Array.isArray(raw.prefixes) ? raw.prefixes : [raw.prefix]
     extension.prefixes = []
     for (var i = 0; i < sourcePrefixes.length; i++) {
@@ -915,6 +918,13 @@ function normalizeExtension(raw) {
       extension.extraData = emojiFileList(raw.extraData, [])
       extension.copyCommand = stringArray(raw.copyCommand)
       if (extension.copyCommand.length === 0) extension.copyCommand = ["wl-copy", "--", "{emoji}"]
+    } else if (mode === "clipboard") {
+      extension.history = emojiFileList(raw.history, [
+        "{stateHome}/omarchy/clipboard-history.json"
+      ])
+      extension.copyCommand = stringArray(raw.copyCommand)
+      extension.fileCommand = stringArray(raw.fileCommand)
+      extension.fileCopyCommand = stringArray(raw.fileCopyCommand)
     }
   } else {
     extension.prefixes = []
@@ -962,6 +972,32 @@ function lookupKey(value) {
 // extension is always on disk, so this is the only way to remove one.
 // A capability whose `enabled` is written out in config.jsonc is pinned there:
 // the launcher's own toggle must not fight a value the user typed.
+// The launcher keeps one size so it never resizes as results change. The
+// default is deliberately smaller than Omarchy's clipboard panel; the numbers
+// are configurable because the right size depends on the screen.
+var DEFAULT_LAUNCHER_WIDTH = 660
+var DEFAULT_LAUNCHER_HEIGHT = 460
+var MIN_LAUNCHER_WIDTH = 320
+var MAX_LAUNCHER_WIDTH = 2000
+var MIN_LAUNCHER_HEIGHT = 240
+var MAX_LAUNCHER_HEIGHT = 1600
+
+function launcherSizeValue(value, fallback, low, high) {
+  var size = finiteExtensionNumber(value, fallback)
+  if (size === null) return fallback
+  size = Math.round(size)
+  return size >= low && size <= high ? size : fallback
+}
+
+function launcherSize(launcherConfig) {
+  var config = launcherConfig && typeof launcherConfig === "object" && !Array.isArray(launcherConfig)
+    ? launcherConfig : ({})
+  return {
+    width: launcherSizeValue(config.width, DEFAULT_LAUNCHER_WIDTH, MIN_LAUNCHER_WIDTH, MAX_LAUNCHER_WIDTH),
+    height: launcherSizeValue(config.height, DEFAULT_LAUNCHER_HEIGHT, MIN_LAUNCHER_HEIGHT, MAX_LAUNCHER_HEIGHT)
+  }
+}
+
 function capabilityLockedByConfig(capability, configuredCapabilities) {
   var configured = configuredCapabilities && typeof configuredCapabilities === "object"
     ? configuredCapabilities : ({})
@@ -1082,6 +1118,8 @@ function parseExtensionCatalog(text) {
   var capabilityConfig = parsed && typeof parsed.capabilityConfig === "object" && !Array.isArray(parsed.capabilityConfig)
     ? parsed.capabilityConfig : ({})
   var disabledCapabilities = parsed && Array.isArray(parsed.disabledCapabilities) ? parsed.disabledCapabilities : []
+  var launcherConfig = parsed && parsed.omalaunchConfig && typeof parsed.omalaunchConfig === "object"
+    ? parsed.omalaunchConfig.launcher : null
   var configuredCapabilities = parsed && parsed.omalaunchConfig && typeof parsed.omalaunchConfig === "object"
     && parsed.omalaunchConfig.capabilities && typeof parsed.omalaunchConfig.capabilities === "object"
     && !Array.isArray(parsed.omalaunchConfig.capabilities)
@@ -1128,6 +1166,7 @@ function parseExtensionCatalog(text) {
     extensions: resolved,
     diagnostics: diagnostics,
     configuredCapabilities: configuredCapabilities,
+    launcherSize: launcherSize(launcherConfig),
     valid: true,
     complete: complete
   }
@@ -1984,6 +2023,200 @@ function calculationExpression(query, currency) {
   return text.replace(/\b([A-Za-z]{3})\b/g, function(match) { return match.toUpperCase() })
 }
 
+// Clipboard history is a JSON array of {type:"text",text} and
+// {type:"image",path,mime,capturedAt}, newest first, written by Omarchy's
+// clipboard capture. Omalaunch reads it and never writes it.
+//
+// Only a prefix of an entry is ever scanned or rendered. A single large paste
+// otherwise costs hundreds of megabytes of string work on every keystroke.
+// Pasting passes the history index to Omarchy's helper, which reads the full
+// entry back itself — so nothing is lost, and no clipboard content is ever put
+// on a command line where a process listing could show it.
+var MAX_CLIPBOARD_TEXT = 8192
+var MAX_CLIPBOARD_ENTRIES = 500
+var MAX_CLIPBOARD_ROWS = 100
+
+function clipboardFileUriPath(line) {
+  var value = String(line || "").trim()
+  if (value.indexOf("file://") !== 0) return ""
+  var path = value.substring(7)
+  if (path.indexOf("localhost/") === 0) path = path.substring(9)
+  if (path.charAt(0) !== "/") return ""
+  try { return decodeURIComponent(path) } catch (e) { return path }
+}
+
+function clipboardFilePaths(text) {
+  var lines = String(text || "").split(/\r?\n/)
+  var paths = []
+  for (var i = 0; i < lines.length; i++) {
+    var path = clipboardFileUriPath(lines[i])
+    if (path) paths.push(path)
+  }
+  return paths
+}
+
+function clipboardBaseName(path) {
+  var parts = String(path || "").split("/")
+  return parts.length > 0 ? parts[parts.length - 1] : String(path || "")
+}
+
+function parseClipboardHistory(raw) {
+  var parsed
+  try { parsed = JSON.parse(String(raw || "[]")) } catch (e) { return [] }
+  if (!Array.isArray(parsed)) return []
+
+  var entries = []
+  for (var i = 0; i < parsed.length && entries.length < MAX_CLIPBOARD_ENTRIES; i++) {
+    var value = parsed[i]
+    if (typeof value === "string") value = { type: "text", text: value }
+    if (!value || typeof value !== "object") continue
+
+    var type = String(value.type || value.kind || "")
+    if (type === "image") {
+      var imagePath = String(value.path || "")
+      if (!imagePath) continue
+      entries.push({
+        kind: "image",
+        index: i,
+        path: imagePath,
+        mime: String(value.mime || "image/png"),
+        capturedAt: String(value.capturedAt || ""),
+        text: ""
+      })
+      continue
+    }
+    if (type !== "text") continue
+
+    var text = String(value.text || "")
+    if (!text.trim()) continue
+    // Cut on a line break so a file:// URI never truncates into a bogus path.
+    if (text.length > MAX_CLIPBOARD_TEXT) {
+      var cut = text.lastIndexOf("\n", MAX_CLIPBOARD_TEXT)
+      text = text.slice(0, cut > 0 ? cut : MAX_CLIPBOARD_TEXT)
+    }
+    var paths = clipboardFilePaths(text)
+    entries.push({
+      kind: paths.length > 0 ? "file" : "text",
+      index: i,
+      path: paths.length === 1 ? paths[0] : "",
+      paths: paths,
+      mime: "text/plain",
+      capturedAt: "",
+      text: text
+    })
+  }
+  return entries
+}
+
+function clipboardEntryPreview(entry) {
+  if (!entry) return ""
+  if (entry.kind === "image")
+    return (entry.mime === "image/png" ? "Screenshot" : "Image")
+      + (entry.capturedAt ? " from " + entry.capturedAt : "")
+  if (entry.kind === "file")
+    return entry.paths.length === 1 ? clipboardBaseName(entry.paths[0]) : entry.paths.length + " files"
+  return String(entry.text || "").replace(/\s+/g, " ").trim()
+}
+
+function clipboardEntryDetail(entry) {
+  if (!entry) return ""
+  if (entry.kind === "image") return String(entry.mime || "image")
+  if (entry.kind === "file") return entry.paths.length === 1 ? entry.paths[0] : entry.paths.join(", ")
+  var lines = String(entry.text || "").split(/\r?\n/).length
+  var characters = String(entry.text || "").length
+  return lines > 1 ? lines + " lines · " + characters + " characters" : characters + " characters"
+}
+
+// A remembered fragment is what people search a clipboard by, so this is a
+// plain case-insensitive substring rather than the word matching used
+// elsewhere.
+function clipboardSearchText(entry) {
+  if (!entry) return ""
+  if (entry.kind === "image") return ("image screenshot " + entry.mime + " " + entry.capturedAt).toLowerCase()
+  return (String(entry.text || "") + " " + clipboardEntryPreview(entry)).toLowerCase()
+}
+
+function clipboardRows(entries, query, limit) {
+  var values = Array.isArray(entries) ? entries : []
+  var needle = String(query || "").trim().toLowerCase()
+  var max = finiteExtensionNumber(limit, MAX_CLIPBOARD_ROWS)
+  if (max === null || max < 0) max = MAX_CLIPBOARD_ROWS
+  max = Math.min(max, MAX_CLIPBOARD_ROWS)
+
+  var rows = []
+  for (var i = 0; i < values.length && rows.length < max; i++) {
+    var entry = values[i]
+    if (needle && clipboardSearchText(entry).indexOf(needle) < 0) continue
+    rows.push({
+      kind: entry.kind,
+      index: entry.index,
+      preview: clipboardEntryPreview(entry),
+      detail: clipboardEntryDetail(entry),
+      path: entry.path,
+      mime: entry.mime
+    })
+  }
+  return rows
+}
+
+// The detail pane shows one entry at a time, so it can afford the whole
+// (already capped) text where a row could not.
+var MAX_CLIPBOARD_BODY = 4000
+
+function clipboardEntryBody(entry) {
+  if (!entry) return ""
+  if (entry.kind === "image") return ""
+  if (entry.kind === "file") return entry.paths.join("\n")
+  var text = String(entry.text || "")
+  return text.length > MAX_CLIPBOARD_BODY ? text.slice(0, MAX_CLIPBOARD_BODY) : text
+}
+
+function clipboardCountLabel(count, singular) {
+  return count + " " + (count === 1 ? singular : singular + "s")
+}
+
+// Label/value pairs for the detail pane, in the order Raycast reads them:
+// what it is, then how big, then where it came from.
+function clipboardEntryMetadata(entry) {
+  if (!entry) return []
+  if (entry.kind === "image") {
+    var image = [{ label: "Type", value: "Image" }, { label: "Format", value: String(entry.mime || "") }]
+    if (entry.capturedAt) image.push({ label: "Captured", value: String(entry.capturedAt) })
+    if (entry.path) image.push({ label: "Path", value: String(entry.path) })
+    return image
+  }
+  if (entry.kind === "file") {
+    var files = [{ label: "Type", value: entry.paths.length === 1 ? "File" : "Files" },
+      { label: "Count", value: clipboardCountLabel(entry.paths.length, "file") }]
+    if (entry.paths.length === 1) files.push({ label: "Path", value: entry.paths[0] })
+    return files
+  }
+  var text = String(entry.text || "")
+  var lines = text.split(/\r?\n/).length
+  var words = text.trim() ? text.trim().split(/\s+/).length : 0
+  var meta = [{ label: "Type", value: "Text" },
+    { label: "Characters", value: String(text.length) },
+    { label: "Words", value: String(words) }]
+  if (lines > 1) meta.push({ label: "Lines", value: String(lines) })
+  return meta
+}
+
+// {stateHome} follows the XDG convention the rest of Omalaunch's state uses.
+function clipboardHistoryPaths(extension, stateHome, omarchyPath) {
+  if (!extension || extension.mode !== "clipboard") return []
+  var source = Array.isArray(extension.history) ? extension.history : []
+  var paths = []
+  for (var i = 0; i < source.length; i++) {
+    var value = String(source[i] || "")
+    if (!value || value.indexOf("..") >= 0) continue
+    value = value.replace(/\{stateHome\}/g, String(stateHome || ""))
+      .replace(/\{omarchyPath\}/g, String(omarchyPath || ""))
+      .replace(/\{extensionDir\}/g, String(extension.sourceDir || ""))
+    if (value.indexOf("/") === 0 && paths.indexOf(value) < 0) paths.push(value)
+  }
+  return paths
+}
+
 function displayRow(items, itemOrder, checkedResults, entry, detail, score, section, metadata) {
   var target = entry.kind === "link" ? entry.target : entry.id
   return {
@@ -2136,13 +2369,14 @@ function actionBarHints(state) {
   else if (value.workflowInputActive) hints.push({ label: "Continue", shortcut: "Enter" })
   else if (value.hasSelection) {
     var primary = value.actionPanelActive ? "Run"
-      : (value.emojiPickerActive ? "Paste"
+      : (value.emojiPickerActive || value.clipboardPickerActive ? "Paste"
         : (value.directoryPickerActive || value.dmenuActive ? "Select"
           : (value.workflowActive ? "Continue" : "Open")))
     hints.push({ label: primary, shortcut: "Enter" })
   }
 
-  if (value.emojiPickerActive && value.hasSelection) hints.push({ label: "Copy", shortcut: "Ctrl C" })
+  if ((value.emojiPickerActive || value.clipboardPickerActive) && value.hasSelection)
+    hints.push({ label: "Copy", shortcut: "Ctrl C" })
   if (value.fileBrowserActive && value.hasSelection && !value.directoryPickerActive && !value.actionPanelActive) {
     hints.push({ label: "Actions", shortcut: "Ctrl K" })
     hints.push({ label: "Copy Path", shortcut: "Ctrl C" })
@@ -2228,6 +2462,7 @@ if (typeof module !== "undefined") {
     disabledCapabilitySet: disabledCapabilitySet,
     enabledExtensions: enabledExtensions,
     capabilityLockedByConfig: capabilityLockedByConfig,
+    launcherSize: launcherSize,
     parseExtensionCatalog: parseExtensionCatalog,
     parseExtensions: parseExtensions,
     matchesRules: matchesRules,
@@ -2279,6 +2514,14 @@ if (typeof module !== "undefined") {
     normalizeCalculationQuery: normalizeCalculationQuery,
     formatCalculationValue: formatCalculationValue,
     calculationExpression: calculationExpression,
+    parseClipboardHistory: parseClipboardHistory,
+    clipboardRows: clipboardRows,
+    clipboardEntryPreview: clipboardEntryPreview,
+    clipboardEntryDetail: clipboardEntryDetail,
+    clipboardFilePaths: clipboardFilePaths,
+    clipboardHistoryPaths: clipboardHistoryPaths,
+    clipboardEntryBody: clipboardEntryBody,
+    clipboardEntryMetadata: clipboardEntryMetadata,
     displayRow: displayRow,
     actionBarHints: actionBarHints,
     compactActionBarHints: compactActionBarHints

@@ -157,6 +157,7 @@ elif mode == 'integer-overflow':
           and catalog["omalaunchConfig"] == {
               "version": 1,
               "capabilities": {"files": {"provider": "chosen"}},
+              "launcher": {},
           }
           and catalog["capabilityConfig"] == {"files": {"includeGitIgnored": True}},
           "bounded JSONC loads core and capability configuration")
@@ -176,6 +177,30 @@ elif mode == 'integer-overflow':
         '"typo": {"enabled": "false"},'
         '"empty": {}'
         '}}')
+    # Launcher size, in its own home so the shared config stays the size the
+    # catalog byte-limit check budgets for.
+    size_home = base / "size-home"
+    size_config = size_home / ".config" / "omarchy" / "omalaunch"
+    size_config.mkdir(parents=True)
+    (size_config / "config.jsonc").write_text(
+        '{"version": 1, "launcher": {"width": 700, "height": 500}}')
+    size_catalog = run_loader(plugin_root, omarchy_root, size_home, env)
+    check(size_catalog["omalaunchConfig"]["launcher"] == {"width": 700, "height": 500},
+          "launcher size is read from configuration")
+
+    for bad, note in (
+        ('{"version": 1, "launcher": {"width": 99999}}', "out-of-range launcher width"),
+        ('{"version": 1, "launcher": {"height": 1}}', "out-of-range launcher height"),
+        ('{"version": 1, "launcher": {"width": "wide"}}', "non-integer launcher width"),
+        ('{"version": 1, "launcher": {"width": true}}', "boolean launcher width"),
+        ('{"version": 1, "launcher": []}', "non-object launcher settings"),
+    ):
+        (size_config / "config.jsonc").write_text(bad)
+        rejected = run_loader(plugin_root, omarchy_root, size_home, env)
+        check(rejected["omalaunchConfig"]["launcher"] == {}
+              and any("launcher" in message for message in rejected["diagnostics"]),
+              f"{note} is refused with a diagnostic rather than applied")
+
     disabled_catalog = run_loader(plugin_root, omarchy_root, disable_home, env)
     check(disabled_catalog["disabledCapabilities"] == ["bundled", "both"],
           "capabilities switched off are reported to the host")
