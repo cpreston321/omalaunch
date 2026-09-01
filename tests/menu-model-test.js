@@ -640,6 +640,251 @@ assert(menu.compareSearchRows(
   false
 ) > 0, 'queries shorter than three characters ignore usage history')
 
+const missingWtype = menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'omalaunch.emoji', mode: 'emoji', label: 'Emoji', prefixes: ['emoji'],
+  command: ['omarchy-menu-emoji-insert', '{emoji}'],
+  _bundled: true, _missingRequires: ['wtype']
+}]))[0]
+assert(!missingWtype.available, 'a missing wtype leaves the emoji extension unavailable')
+assert(menu.dependencySetup(missingWtype).packageName === 'wtype',
+  'wtype is offered as a trusted installable dependency')
+assert(menu.dependencySetup(missingWtype).label === 'Enable emoji pasting',
+  'each installable dependency names what it enables')
+assert(menu.unavailableExtensionDetail(missingWtype) === 'Requires wtype · Press Enter to install',
+  'a missing wtype offers installation rather than a bare dependency name')
+assert(menu.firstSetupExtension([missingWtype]) === missingWtype,
+  'the emoji extension surfaces its own setup prompt')
+const missingInsert = menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'omalaunch.emoji', mode: 'emoji', label: 'Emoji', prefixes: ['emoji'],
+  command: ['omarchy-menu-emoji-insert', '{emoji}'],
+  _bundled: true, _missingRequires: ['omarchy-menu-emoji-insert']
+}]))[0]
+assert(menu.dependencySetup(missingInsert) === null
+  && menu.unavailableExtensionDetail(missingInsert) === 'Missing dependency: omarchy-menu-emoji-insert',
+  'a missing Omarchy helper is reported but never offered as a package install')
+
+// ---------------------------------------------------------------- emoji
+
+const emojiExtensions = menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1,
+  id: 'omalaunch.emoji',
+  capability: 'emoji',
+  mode: 'emoji',
+  label: 'Emoji',
+  prefixes: ['emoji'],
+  command: ['omarchy-menu-emoji-insert', '{emoji}']
+}]))
+assert(emojiExtensions.length === 1 && emojiExtensions[0].mode === 'emoji', 'emoji extensions are parsed')
+assert(emojiExtensions[0].copyCommand.join(' ') === 'wl-copy -- {emoji}', 'emoji extensions default to a clipboard copy command')
+assert(emojiExtensions[0].data.join('|') === '{omarchyPath}/shell/plugins/emojis/emojis.json|{extensionDir}/emojis.json',
+  'emoji extensions default to Omarchy\'s dataset with a bundled fallback behind it')
+assert(menu.extensionRootActivation(emojiExtensions[0]) === 'emoji', 'emoji extension roots open the picker')
+assert(menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'no-prefix', mode: 'emoji', label: 'Emoji', command: ['true']
+}])).length === 0, 'emoji extensions without a prefix are ignored')
+assert(menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'no-command', mode: 'emoji', label: 'Emoji', prefixes: ['emoji']
+}])).length === 0, 'emoji extensions without a command are ignored')
+assert(menu.openStateReset().emojiPickerActive === false && menu.openStateReset().emojiExtension === null,
+  'a new launcher session leaves the emoji picker')
+
+assert(menu.extensionRouteCapability('emoji') === 'emoji', 'a summon can route to an extension capability')
+assert(menu.extensionRouteCapability('  files  ') === 'files', 'routed capabilities are trimmed')
+assert(menu.extensionRouteCapability('') === '' && menu.extensionRouteCapability('   ') === '',
+  'an empty routed capability is ignored')
+assert(menu.extensionRouteCapability(undefined) === '' && menu.extensionRouteCapability(null) === ''
+  && menu.extensionRouteCapability(42) === '' && menu.extensionRouteCapability({}) === '',
+  'a non-string routed capability is ignored')
+assert(menu.extensionRouteCapability('x'.repeat(128)).length === 128
+  && menu.extensionRouteCapability('x'.repeat(129)) === '',
+  'routed capabilities are bounded')
+assert(menu.openStateReset().pendingExtensionCapability === '',
+  'a new launcher session drops a pending extension route')
+
+assert(menu.emojiDataPaths(emojiExtensions[0], '/usr/share/omarchy')[0] === '/usr/share/omarchy/shell/plugins/emojis/emojis.json',
+  '{omarchyPath} expands in the emoji dataset path')
+assert(menu.emojiDataPaths(emojiExtensions[0], '/usr/share/omarchy').length === 2,
+  'every readable dataset candidate is resolved in order')
+assert(menu.emojiFileList(['a', 'a', 'b']).join('|') === 'a|b', 'duplicate dataset candidates collapse')
+assert(menu.emojiFileList('one').join('|') === 'one', 'a single dataset path is still accepted')
+assert(menu.emojiFileList(undefined, ['fallback']).join('|') === 'fallback',
+  'an absent dataset falls back to the provider default')
+assert(menu.emojiFileList(Array.from({ length: 12 }, (_, i) => `p${i}`)).length === 8,
+  'dataset candidates are bounded')
+assert(menu.emojiDataPaths(menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'mixed', mode: 'emoji', label: 'Emoji', prefixes: ['emoji'],
+  data: ['relative.json', '{omarchyPath}/ok.json', '{extensionDir}/../escape.json'],
+  command: ['true']
+}]))[0], '/usr/share/omarchy').join('|') === '/usr/share/omarchy/ok.json',
+  'unsafe dataset candidates are dropped without discarding the safe ones')
+const relativeDataExtension = menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'relative', mode: 'emoji', label: 'Emoji', prefixes: ['emoji'],
+  data: 'emojis.json', command: ['true']
+}]))[0]
+assert(menu.emojiDataPaths(relativeDataExtension, '/usr/share/omarchy').length === 0, 'relative emoji dataset paths are rejected')
+const escapingDataExtension = menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'escaping', mode: 'emoji', label: 'Emoji', prefixes: ['emoji'],
+  data: '{extensionDir}/../../etc/passwd', command: ['true']
+}]))[0]
+assert(menu.emojiDataPaths(escapingDataExtension, '/usr/share/omarchy').length === 0, 'emoji dataset paths cannot escape with ..')
+assert(menu.emojiDataPaths(extensions[0], '/usr/share/omarchy').length === 0, 'non-emoji extensions have no dataset path')
+
+const emojiData = menu.parseEmojiData(JSON.stringify([
+  { e: '\u{1F600}', k: 'grinning face smile grinning happy' },
+  { e: '\u{1F680}', k: 'ship rocket launch' },
+  { e: '\u{1F600}', k: 'duplicate entry' },
+  { e: '', k: 'missing glyph' },
+  'not an object',
+  { e: '\u{1F42C}', k: 'dolphin flipper' }
+]))
+assert(emojiData.length === 3, 'emoji datasets drop duplicates, empty glyphs, and non-objects')
+assert(emojiData[0].caption === 'Grinning face smile happy', 'emoji captions deduplicate repeated keywords')
+assert(menu.parseEmojiData('{bad json').length === 0, 'malformed emoji datasets are ignored')
+assert(menu.parseEmojiData(JSON.stringify({ emojis: [{ emoji: '\u{1F680}', keywords: 'rocket' }] })).length === 1,
+  'emoji datasets accept an object wrapper and long field names')
+
+assert(menu.emojiMatchScore('ship rocket launch', ['rocket']) > 0, 'emoji keywords match by word')
+assert(menu.emojiMatchScore('ship rocket launch', ['roc']) > 0, 'emoji keywords match by word prefix')
+assert(menu.emojiMatchScore('ship rocket launch', ['ocket']) < 0, 'emoji keywords do not match mid-word')
+assert(menu.emojiMatchScore('ship rocket launch', ['rocket', 'ship']) > 0, 'every emoji term must match')
+assert(menu.emojiMatchScore('ship rocket launch', ['rocket', 'plane']) < 0, 'an unmatched emoji term rejects the entry')
+assert(menu.emojiMatchScore('ship rocket launch', ['ship']) > menu.emojiMatchScore('ship rocket launch', ['launch']),
+  'a leading emoji keyword outranks a trailing one')
+
+const emojiCapabilityRows = menu.emojiRows(emojiData, 'rocket', { capability: 'emoji' })
+assert(emojiCapabilityRows.length === 1 && emojiCapabilityRows[0].emoji === '\u{1F680}', 'emoji rows filter by query')
+assert(menu.emojiFavorite(emojiCapabilityRows[0].itemId).capability === 'emoji'
+  && menu.emojiFavorite(emojiCapabilityRows[0].itemId).emoji === '\u{1F680}',
+  'emoji pins round-trip their capability and glyph')
+assert(menu.emojiFavorite('file.favorite:["files","file","/tmp"]') === null, 'file favorites are not emoji pins')
+assert(menu.emojiFavoriteId('\u{1F680}', '') === '', 'emoji pins require a capability')
+assert(menu.emojiRows(emojiData, '', { capability: 'emoji' }).map(row => row.emoji).join('') === emojiData.map(entry => entry.emoji).join(''),
+  'an empty emoji query preserves dataset order')
+assert(menu.emojiRows(emojiData, '', { capability: 'emoji', limit: 2 }).length === 2, 'emoji rows honor their limit')
+assert(menu.emojiRows(emojiData, '', {}).every(row => row.itemId === ''), 'emoji rows without a capability carry no pin id')
+
+const pinnedEmojiId = menu.emojiFavoriteId('\u{1F42C}', 'emoji')
+const pinnedEmojiRows = menu.emojiRows(emojiData, '', {
+  capability: 'emoji',
+  isStarred: itemId => itemId === pinnedEmojiId
+})
+assert(pinnedEmojiRows[0].emoji === '\u{1F42C}' && pinnedEmojiRows[0].starred, 'pinned emoji lead an unfiltered grid')
+const usedEmojiId = menu.emojiFavoriteId('\u{1F680}', 'emoji')
+const usedEmojiRows = menu.emojiRows(emojiData, '', {
+  capability: 'emoji',
+  usageCount: itemId => (itemId === usedEmojiId ? 4 : 0)
+})
+assert(usedEmojiRows[0].emoji === '\u{1F680}', 'frequently pasted emoji lead an unfiltered grid')
+const searchedEmojiRows = menu.emojiRows(emojiData, 'dolphin', {
+  capability: 'emoji',
+  isStarred: itemId => itemId === usedEmojiId,
+  usageCount: itemId => (itemId === usedEmojiId ? 40 : 0)
+})
+assert(searchedEmojiRows.length === 1 && searchedEmojiRows[0].emoji === '\u{1F42C}',
+  'pins and history never promote an emoji that does not match the query')
+
+// ---- sections ----
+
+const emojiGroups = menu.parseEmojiGroups(`{
+  "version": 1,
+  // Comments are accepted, like every other hand-authored file.
+  "groups": [
+    { "label": "Faces", "start": "\u{1F600}" },
+    { "label": "Travel", "start": "\u{1F680}" },
+  ],
+}`)
+assert(emojiGroups.length === 2 && emojiGroups[0].label === 'Faces', 'emoji group files accept JSONC')
+assert(menu.parseEmojiGroups('{bad').length === 0, 'malformed emoji group files are ignored')
+assert(menu.parseEmojiGroups('[{"label":"","start":"\u{1F600}"},{"label":"Ok"}]').length === 0,
+  'emoji groups need both a label and a start glyph')
+assert(menu.emojiGroupsPaths(emojiExtensions[0], '/usr/share/omarchy').length === 0,
+  'an emoji extension without a groups file has no groups path')
+
+const groupedData = menu.parseEmojiData(JSON.stringify([
+  { e: '\u{1F600}', k: 'grinning' },
+  { e: '\u{1F603}', k: 'smiley' },
+  { e: '\u{1F680}', k: 'rocket' },
+  { e: '\u{1F42C}', k: 'dolphin' }
+]))
+assert(menu.emojiGroupLabels(groupedData, emojiGroups).join('|') === 'Faces|Faces|Travel|Travel',
+  'group boundaries label every emoji up to the next boundary')
+assert(menu.emojiGroupLabels(groupedData, [{ label: 'Travel', start: '\u{1F680}' }]) === null,
+  'boundaries that skip the start of the dataset abandon grouping')
+assert(menu.emojiGroupLabels(groupedData, [
+  { label: 'Faces', start: '\u{1F600}' }, { label: 'Missing', start: '\u{1F9E8}' }
+]) === null, 'a boundary absent from the dataset abandons grouping')
+assert(menu.emojiGroupLabels(groupedData, [
+  { label: 'Travel', start: '\u{1F680}' }, { label: 'Faces', start: '\u{1F600}' }
+]) === null, 'out-of-order boundaries abandon grouping')
+assert(menu.emojiGroupLabels(groupedData, []) === null, 'no boundaries means no grouping')
+
+const browseSections = menu.emojiSections(groupedData, '', {
+  capability: 'emoji', columns: 2, groups: emojiGroups
+})
+assert(browseSections.sectioned && browseSections.rows.length === 2, 'browsing lays emoji out per category')
+assert(browseSections.rows.map(row => row.section).join('|') === 'Faces|Travel', 'each row carries its category')
+assert(browseSections.cells.length === 4, 'browsing shows every emoji')
+assert(browseSections.cells[2].row === 1 && browseSections.cells[2].column === 0,
+  'cells know the row and column they were laid out at')
+
+const narrowSections = menu.emojiSections(groupedData, '', {
+  capability: 'emoji', columns: 1, groups: emojiGroups
+})
+assert(narrowSections.rows.length === 4 && narrowSections.rows.every(row => row.count === 1),
+  'a one-column layout gives every emoji its own row')
+
+const searchedSections = menu.emojiSections(groupedData, 'rocket', {
+  capability: 'emoji', columns: 8, groups: emojiGroups
+})
+assert(!searchedSections.sectioned && searchedSections.rows.length === 1
+  && searchedSections.rows[0].section === '' && searchedSections.cells.length === 1,
+  'a search answers with one unlabelled ranked section')
+
+const pinnedId = menu.emojiFavoriteId('\u{1F42C}', 'emoji')
+const frequentId = menu.emojiFavoriteId('\u{1F680}', 'emoji')
+const historySections = menu.emojiSections(groupedData, '', {
+  capability: 'emoji', columns: 2, groups: emojiGroups,
+  isStarred: itemId => itemId === pinnedId,
+  usageCount: itemId => (itemId === frequentId ? 3 : 0)
+})
+assert(historySections.rows[0].section === 'Pinned'
+  && historySections.cells[historySections.rows[0].start].emoji === '\u{1F42C}',
+  'pinned emoji lead their own section')
+assert(historySections.rows[1].section === 'Frequently Used'
+  && historySections.cells[historySections.rows[1].start].emoji === '\u{1F680}',
+  'frequently used emoji follow in their own section')
+assert(historySections.rows.slice(2).map(row => row.section).join('|') === 'Faces|Travel',
+  'categories still follow the history sections')
+assert(historySections.cells.filter(cell => cell.emoji === '\u{1F42C}').length === 2,
+  'a pinned emoji stays listed in its category too, so browsing has no holes')
+assert(historySections.cells.every(cell => cell.itemId === menu.emojiFavoriteId(cell.emoji, 'emoji')),
+  'every laid-out cell carries its pin id')
+
+const manyFrequent = menu.parseEmojiData(JSON.stringify(
+  Array.from({ length: 40 }, (_, i) => ({ e: String.fromCodePoint(0x1F600 + i), k: `face-${i}` }))
+))
+const cappedSections = menu.emojiSections(manyFrequent, '', {
+  capability: 'emoji', columns: 8, groups: [{ label: 'Faces', start: '\u{1F600}' }],
+  usageCount: () => 5
+})
+const frequentRows = cappedSections.rows.filter(row => row.section === 'Frequently Used')
+assert(frequentRows.reduce((total, row) => total + row.count, 0) === 16,
+  'the frequently used section is capped at sixteen emoji')
+
+const ungroupedSections = menu.emojiSections(groupedData, '', { capability: 'emoji', columns: 2 })
+assert(ungroupedSections.rows.every(row => row.section === '') && ungroupedSections.cells.length === 4,
+  'without usable boundaries the grid stays flat rather than mislabelled')
+
+assert(menu.openStateReset().routedExtensionSession === false,
+  'a new launcher session is not a routed extension session')
+
+const emojiHints = menu.actionBarHints({ emojiPickerActive: true, hasSelection: true, canStar: true, starred: false })
+assert(emojiHints[0].label === 'Paste' && emojiHints[0].shortcut === 'Enter', 'the emoji picker pastes on Enter')
+assert(emojiHints.some(hint => hint.label === 'Copy' && hint.shortcut === 'Ctrl C'), 'the emoji picker copies on Ctrl+C')
+assert(emojiHints.some(hint => hint.label === 'Star' && hint.shortcut === 'Ctrl S'), 'the emoji picker pins on Ctrl+S')
+assert(!menu.actionBarHints({ emojiPickerActive: true, hasSelection: false }).some(hint => hint.label === 'Copy'),
+  'an empty emoji grid offers no copy hint')
+
 const marker = path.join(os.tmpdir(), `omalaunch-guard-${process.pid}`)
 const hostileId = `row; touch ${marker}; #`
 const guardRun = childProcess.spawnSync('bash', ['-c', menu.guardScript({
@@ -657,6 +902,95 @@ const configuredProviderCatalog = menu.parseExtensionCatalog(JSON.stringify({
 }))
 assert(configuredProviderCatalog.extensions[0].id === 'chosen-files' && configuredProviderCatalog.extensions[0].config.includeGitIgnored === true,
   'provider configuration selects an available id and capability configuration follows capability identity')
+// ---- switching a capability off from the Extensions row ----
+
+const rowExtensions = [
+  { capability: 'emoji', id: 'omalaunch.emoji', label: 'Emoji', available: true, rootDescription: 'Search and paste emoji', prefixes: ['emoji'], bundled: true },
+  { capability: 'files', id: 'omalaunch.files', label: 'Files', available: true, rootDescription: 'Browse files', prefixes: ['files'], bundled: true }
+]
+const remaining = menu.enabledExtensions(rowExtensions, ['emoji'])
+assert(remaining.length === 1 && remaining[0] === rowExtensions[1],
+  'the enabled subset filters without copying, so extension identity survives a reload')
+assert(menu.enabledExtensions(rowExtensions, []).length === 2, 'nothing is filtered without a disabled capability')
+assert(menu.enabledExtensions(rowExtensions, 'emoji').length === 2, 'a non-array disabled list is ignored')
+
+assert(menu.capabilityLockedByConfig('emoji', { emoji: { enabled: false } }),
+  'an explicit enabled in configuration pins the capability')
+assert(menu.capabilityLockedByConfig('emoji', { emoji: { enabled: true } }),
+  'a pin holds whichever way it was written')
+assert(!menu.capabilityLockedByConfig('emoji', { emoji: { provider: 'p' } }),
+  'a provider selection alone does not pin the capability')
+assert(!menu.capabilityLockedByConfig('emoji', {}) && !menu.capabilityLockedByConfig('emoji', null),
+  'an unconfigured capability is not pinned')
+
+assert(menu.extensionRootDetail(rowExtensions[0], false, false) === 'Search and paste emoji',
+  'an enabled extension keeps its own description')
+assert(menu.extensionRootDetail(rowExtensions[0], true, false) === 'Disabled · Press Delete to enable',
+  'a disabled row says how to switch it back on')
+assert(menu.extensionRootDetail(rowExtensions[0], true, true) === 'Disabled in configuration',
+  'a config-pinned row does not promise a key that would not work')
+assert(menu.extensionRootItem(rowExtensions[0], true, false).description === 'Disabled · Press Delete to enable',
+  'the Extensions row carries the disabled detail')
+assert(menu.extensionRootItem(rowExtensions[0]).description === 'Search and paste emoji',
+  'omitting the disabled arguments keeps the previous behavior')
+
+const toggleHints = menu.actionBarHints({ hasSelection: true, canToggleCapability: true, capabilityDisabled: false })
+assert(toggleHints.some(hint => hint.label === 'Disable' && hint.shortcut === 'Del'),
+  'an enabled extension row offers Disable')
+assert(menu.actionBarHints({ hasSelection: true, canToggleCapability: true, capabilityDisabled: true })
+  .some(hint => hint.label === 'Enable' && hint.shortcut === 'Del'),
+  'a disabled extension row offers Enable')
+assert(!menu.actionBarHints({ hasSelection: true }).some(hint => hint.shortcut === 'Del'),
+  'rows that are not extensions offer no capability toggle')
+
+const configuredCatalog = menu.parseExtensionCatalog(JSON.stringify({
+  extensions: [{ schemaVersion: 1, id: 'keeper', capability: 'files', mode: 'files', label: 'Files', prefixes: ['files'], command: ['true'] }],
+  omalaunchConfig: { version: 1, capabilities: { files: { enabled: true }, emoji: { provider: 'p' } } }
+}))
+assert(menu.capabilityLockedByConfig('files', configuredCatalog.configuredCapabilities)
+  && !menu.capabilityLockedByConfig('emoji', configuredCatalog.configuredCapabilities),
+  'the catalog reports which capabilities configuration pinned')
+assert(Object.keys(menu.parseExtensionCatalog('[]').configuredCapabilities).length === 0,
+  'a catalog without configuration reports no pinned capabilities')
+
+// ---- disabling a capability ----
+
+const disabledCatalog = menu.parseExtensionCatalog(JSON.stringify({
+  extensions: [
+    { schemaVersion: 1, id: 'bundled-emoji', capability: 'emoji', mode: 'emoji', label: 'Emoji', prefixes: ['emoji'], command: ['true'], _bundled: true },
+    { schemaVersion: 1, id: 'external-emoji', capability: 'emoji', mode: 'emoji', label: 'Emoji', prefixes: ['emoji2'], command: ['true'] },
+    { schemaVersion: 1, id: 'keeper', capability: 'files', mode: 'files', label: 'Files', prefixes: ['files'], command: ['true'], _bundled: true }
+  ],
+  disabledCapabilities: ['emoji']
+}))
+assert(disabledCatalog.extensions.map(value => value.capability).join('|') === 'files',
+  'a disabled capability drops every provider of it, not just the selected one')
+assert(disabledCatalog.diagnostics.filter(value => value.indexOf("Capability 'emoji' is disabled") >= 0).length === 1,
+  'a disabled capability is diagnosed once, not once per provider')
+
+assert(menu.parseExtensionCatalog(JSON.stringify({
+  extensions: [{ schemaVersion: 1, id: 'keeper', capability: 'files', mode: 'files', label: 'Files', prefixes: ['files'], command: ['true'] }],
+  disabledCapabilities: ['emoji']
+})).extensions.length === 1, 'disabling a capability nothing provides changes nothing')
+
+// A provider selection for a capability that is switched off is a leftover, not
+// a misconfiguration, so it must not be reported as one.
+const disabledWithProvider = menu.parseExtensionCatalog(JSON.stringify({
+  extensions: [{ schemaVersion: 1, id: 'bundled-emoji', capability: 'emoji', mode: 'emoji', label: 'Emoji', prefixes: ['emoji'], command: ['true'], _bundled: true }],
+  providerPreferences: { emoji: 'gone.away' },
+  disabledCapabilities: ['emoji']
+}))
+assert(disabledWithProvider.extensions.length === 0
+  && !disabledWithProvider.diagnostics.some(value => value.indexOf('is missing; normal provider resolution') >= 0),
+  'a stale provider selection for a disabled capability is not reported as misconfigured')
+
+assert(menu.parseExtensionCatalog(JSON.stringify({
+  extensions: [{ schemaVersion: 1, id: 'bundled-emoji', capability: 'emoji', mode: 'emoji', label: 'Emoji', prefixes: ['emoji'], command: ['true'] }],
+  disabledCapabilities: 'emoji'
+})).extensions.length === 1, 'a non-array disabledCapabilities is ignored')
+assert(Object.keys(menu.disabledCapabilitySet(['  emoji  ', '', null, 42, 'files'])).length === 2,
+  'disabled capability names are trimmed and non-strings dropped')
+
 const missingProviderCatalog = menu.parseExtensionCatalog(JSON.stringify({
   extensions: [{ schemaVersion: 1, id: 'fallback', capability: 'files', mode: 'files', label: 'Fallback', prefixes: ['fallback'], command: ['true'] }],
   providerPreferences: { files: 'missing' }

@@ -44,6 +44,7 @@ This workaround can be removed once Omarchy supports setting a widget’s sectio
 - Copy calculation results directly to the clipboard
 - Browse, recursively search, open, copy paths, and star local files and directories
 - Look up current times and convert times across DST-aware timezones
+- Search a grid of emoji and paste one straight into the focused application
 - Accept dmenu-style select and input requests
 - Load extensions contributed by enabled Omarchy plugins
 - Launch agent prompts such as Pi and Codex through optional extensions
@@ -84,11 +85,31 @@ Press Ctrl+K on a selected item to open its Action Panel. Directories can be ope
 
 ![Browsing files and using the contextual Action Panel in Omalaunch](assets/files-action-panel.gif)
 
+## Emoji
+
+Type `emoji` and activate the **Emoji** result to open a searchable grid, eight emoji to a row. Type to filter by name and keyword — `smi fac` finds smiling faces — then press Enter to paste the selected emoji into whatever application had focus. Ctrl+C copies it to the clipboard instead and leaves the grid open so several emoji can be collected in one session.
+
+Browsing leads with **Pinned**, then **Frequently Used** — your sixteen most-used emoji — followed by the standard categories: Smileys & Emotion, People & Body, Animals & Nature, Food & Drink, Travel & Places, Activities, Objects, Symbols, and Flags. Ctrl+S pins the selected emoji. Searching replaces the categories with a single ranked list.
+
+Left and Right move one emoji, Up and Down move one row, and PageUp and PageDown move one screen. Escape clears the query and then leaves the grid — or closes the launcher outright if you opened the grid straight from a keybinding.
+
+The grid reads the emoji set your Omarchy installation already ships, so it stays current with Omarchy, and falls back to a copy bundled with Omalaunch if that file is ever unavailable. The picker therefore does not need Omarchy's own `omarchy.emojis` overlay plugin to be enabled, or installed at all. That bundled copy is `extensions/emoji/emojis.json`, taken from [Omarchy](https://omarchy.org/) (MIT).
+
+Bind a key to open the grid without passing through the launcher. In
+`~/.config/hypr/bindings.lua`:
+
+```lua
+o.bind("CTRL + ALT + SPACE", "Emoji", "omarchy-shell shell summon quantumfire.omalaunch '{\"extension\":\"emoji\"}'")
+```
+
+Any extension capability works the same way — `files`, `calculator`, and so on.
+
 ## Requirements
 
 - A current Omarchy installation with the manifest-based shell plugin system
 - [`libqalculate`](https://qalculate.github.io/) (`qalc`) to enable calculations and conversions
 - `fd`, `fzf`, `jq`, Python 3, Bash, and `wl-clipboard` (provided by a standard Omarchy installation; Python drives extension loading and file indexing)
+- `wtype` and Omarchy's `omarchy-menu-emoji-insert` to paste emoji into the focused application (both provided by a standard Omarchy installation). If `wtype` is missing, the launcher offers **Enable emoji pasting**, which installs it after you confirm the exact command
 
 Install the calculation dependency through Omarchy:
 
@@ -112,15 +133,16 @@ Examples:
 browser
 wifi
 files
+emoji
 ```
 
 Calculation results appear first and are copied to the clipboard when activated.
 
 ### Extensions
 
-Open the fixed top-level **Extensions** directory to find every active bundled and external extension, including Calculator, Currency conversion, Files, Timezone, and installed workflow integrations such as Codex. Star an extension with Ctrl+S to add the same shortcut to the starting view; it remains in **Extensions**, where starred shortcuts sort first and all others sort alphabetically. The directory itself cannot be starred. Global search finds extension shortcuts whether or not they are starred.
+Open the fixed top-level **Extensions** directory to find every active bundled and external extension, including Calculator, Currency conversion, Emoji, Files, Timezone, and installed workflow integrations such as Codex. Star an extension with Ctrl+S to add the same shortcut to the starting view; it remains in **Extensions**, where starred shortcuts sort first and all others sort alphabetically. The directory itself cannot be starred. Global search finds extension shortcuts whether or not they are starred.
 
-Shortcut activation follows the extension type: Files opens its browser, Timezone prepares its prefix, Calculator and Currency conversion open focused query input, and workflow extensions open their workflow. A replacement provider keeps the same shortcut and favorite because identity is based on stable capability rather than provider id. Missing dependencies are shown on the shortcut without affecting unrelated extensions.
+Shortcut activation follows the extension type: Files opens its browser, Emoji opens its grid, Timezone prepares its prefix, Calculator and Currency conversion open focused query input, and workflow extensions open their workflow. A replacement provider keeps the same shortcut and favorite because identity is based on stable capability rather than provider id. Missing dependencies are shown on the shortcut without affecting unrelated extensions.
 
 Omalaunch includes replaceable bundled extensions. Every external Omalaunch extension is simply a standard Omarchy plugin, so it uses the same installation, enable/disable, update, and removal workflow as any other Omarchy plugin.
 
@@ -150,16 +172,27 @@ Omalaunch reads the stock Omarchy menu and the standard user menu override:
 
 Favorites and usage data are stored in the user's state directory. Currency refreshes use `qalc` and respect a persistent cooldown to avoid unnecessary network requests.
 
-Omalaunch core settings live in the dedicated `~/.config/omarchy/omalaunch/config.jsonc` file. Select a preferred extension provider by capability:
+Omalaunch core settings live in the dedicated `~/.config/omarchy/omalaunch/config.jsonc` file. Select a preferred extension provider by capability, or turn a capability off:
 
 ```jsonc
 {
   "version": 1,
   "capabilities": {
     "files": { "provider": "omalaunch.files" },
+    "emoji": { "enabled": false },
   },
 }
 ```
+
+### Turning an extension off
+
+Bundled extensions — Calculator, Currency conversion, Emoji, Files, and Timezone — ship enabled and are not installed, so there is nothing to uninstall.
+
+The quickest way to turn one off is from the launcher: open **Extensions**, select the row, and press Delete. The row stays listed but dimmed and marked, so pressing Delete again switches it back on. Everywhere else — the starting view, search, its prefix — it disappears. This is stored in `~/.local/state/omarchy/omalaunch-capabilities.json`, next to your favorites and usage history.
+
+`config.jsonc` can do the same with `"enabled": false`, which also removes the row from **Extensions** entirely. A capability written out there is pinned: its row reads **Disabled in configuration** and Delete leaves it alone, so a configured value is never overridden by a keypress.
+
+The capability names are `calculator`, `currency`, `emoji`, `files`, and `timezone`. External extensions can be switched off the same way; disabling leaves the plugin installed, and `omarchy plugin remove <id>` removes it entirely.
 
 Each capability has an independent configuration file. For example, include files ignored by Git in Files browsing and search with `extensions/files.jsonc`:
 
@@ -211,6 +244,63 @@ Omalaunch executes commands supplied by the stock menu, user menu configuration,
 Currency conversion may cause `qalc` to retrieve updated exchange-rate data from its configured upstream source.
 
 ## Development
+
+Run the launcher from a source checkout, without installing it as a plugin:
+
+```bash
+tests/dev-shell.sh          # the launcher's starting view
+tests/dev-shell.sh emoji    # straight into the Emoji grid
+tests/dev-shell.sh files    # straight into the file browser
+```
+
+The argument is an extension capability. The harness symlinks Omarchy's real
+shell modules beside the checkout so themes and styles match a normal
+installation, and it exits as soon as the launcher closes, so Escape always
+returns the keyboard to the desktop. It supplies no application library, so
+application rows and the Apps menu stay empty; everything else behaves
+normally. Starring and usage ranking write to the real
+`~/.local/state/omarchy` files, so pass a throwaway `HOME` to keep a session
+from touching them.
+
+### Using Omalaunch's grid as your only emoji picker
+
+Omarchy also ships its own emoji overlay, bound to Super+Ctrl+E and reachable
+from the Omarchy menu. To route emoji solely through Omalaunch, bind a key as
+above, then in `~/.config/hypr/bindings.lua`:
+
+```lua
+hl.unbind("SUPER + CTRL + E")
+```
+
+and disable the overlay plugin:
+
+```bash
+omarchy plugin disable omarchy.emojis
+```
+
+If you would rather drop Omalaunch's grid and keep Omarchy's overlay, switch the
+capability off in `~/.config/omarchy/omalaunch/config.jsonc` instead:
+
+```jsonc
+{ "version": 1, "capabilities": { "emoji": { "enabled": false } } }
+```
+
+Omalaunch's picker keeps working: it falls back to its bundled dataset, and the
+paste helper is part of Omarchy's core `bin/` rather than that plugin.
+
+To undo all of it:
+
+```bash
+omarchy plugin enable omarchy.emojis
+```
+
+then remove the `hl.unbind("SUPER + CTRL + E")` line, and the
+`CTRL + ALT + SPACE` binding if you no longer want it, and run
+`hyprctl reload`.
+
+Do not develop from a copy installed under `~/.config/omarchy/plugins`:
+Omarchy watches that directory recursively and can reload the shell for every
+file changed beneath it.
 
 Run the tests with:
 

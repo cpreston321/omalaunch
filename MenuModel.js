@@ -452,8 +452,18 @@ var DEPENDENCY_SETUPS = {
   qalc: {
     executable: "qalc",
     packageName: "libqalculate",
+    label: "Enable Calculator & Currency",
     reason: "arithmetic, unit conversion, and currency conversion",
     installCommand: ["omarchy", "pkg", "add", "libqalculate"]
+  },
+  // The emoji insert helper swallows a wtype failure, so without this the
+  // paste is a silent no-op rather than a visible missing dependency.
+  wtype: {
+    executable: "wtype",
+    packageName: "wtype",
+    label: "Enable emoji pasting",
+    reason: "pasting emoji into the focused application",
+    installCommand: ["omarchy", "pkg", "add", "wtype"]
   }
 }
 
@@ -521,6 +531,10 @@ function openStateReset() {
     workflowNode: null,
     workflowContext: ({}),
     workflowStack: [],
+    pendingExtensionCapability: "",
+    routedExtensionSession: false,
+    emojiPickerActive: false,
+    emojiExtension: null,
     focusedExtension: null,
     extensionQuery: "",
     extensionResult: "",
@@ -748,7 +762,13 @@ function extensionRootCapability(itemId) {
   } catch (e) { return "" }
 }
 
-function extensionRootItem(extension) {
+function extensionRootDetail(extension, disabled, lockedByConfig) {
+  if (disabled) return lockedByConfig ? "Disabled in configuration" : "Disabled · Press Delete to enable"
+  if (!extension.available) return unavailableExtensionDetail(extension)
+  return extension.rootDescription
+}
+
+function extensionRootItem(extension, disabled, lockedByConfig) {
   if (!extension || !extension.capability) return null
   var id = extensionRootId(extension)
   if (!id) return null
@@ -757,7 +777,7 @@ function extensionRootItem(extension) {
     icon: extension.icon,
     iconFont: extension.iconFont,
     label: extension.label,
-    description: extension.available ? extension.rootDescription : unavailableExtensionDetail(extension),
+    description: extensionRootDetail(extension, disabled === true, lockedByConfig === true),
     aliases: [extension.id, extension.capability].concat(extension.prefixes || []),
     action: extension.capability
   })
@@ -773,10 +793,36 @@ function sortExtensionRootRows(rows) {
   return result
 }
 
+var MAX_EMOJI_FILE_CANDIDATES = 8
+
+// One or an ordered list of candidates; the host reads the first that loads.
+function emojiFileList(value, fallback) {
+  if (Array.isArray(value)) {
+    var paths = []
+    for (var i = 0; i < value.length && paths.length < MAX_EMOJI_FILE_CANDIDATES; i++) {
+      var entry = String(value[i] === undefined || value[i] === null ? "" : value[i])
+      if (entry && paths.indexOf(entry) < 0) paths.push(entry)
+    }
+    return paths
+  }
+  var single = String(value === undefined || value === null ? "" : value)
+  if (single) return [single]
+  return Array.isArray(fallback) ? fallback.slice() : []
+}
+
+var MAX_EXTENSION_ROUTE_CAPABILITY = 128
+
+function extensionRouteCapability(value) {
+  if (typeof value !== "string") return ""
+  var capability = value.trim()
+  return capability.length > 0 && capability.length <= MAX_EXTENSION_ROUTE_CAPABILITY ? capability : ""
+}
+
 function extensionRootActivation(extension) {
   if (!extension || !extension.available) return ""
   if (extension.mode === "files") return "files"
   if (extension.mode === "workflow") return "workflow"
+  if (extension.mode === "emoji") return "emoji"
   return "input"
 }
 
@@ -813,7 +859,7 @@ function normalizeExtension(raw) {
   var label = String(raw.label || "").trim()
   var mode = String(raw.mode || "prefix")
   var command = stringArray(raw.command)
-  if (!id || !label || ["prefix", "query", "files", "workflow"].indexOf(mode) < 0) return null
+  if (!id || !label || ["prefix", "query", "files", "workflow", "emoji"].indexOf(mode) < 0) return null
   if (mode !== "workflow" && command.length === 0) return null
 
   var priority = finiteExtensionNumber(raw.priority, 0)
@@ -837,7 +883,7 @@ function normalizeExtension(raw) {
     missingRequires: stringArray(raw._missingRequires)
   }
 
-  if (mode === "prefix" || mode === "files" || mode === "workflow") {
+  if (mode === "prefix" || mode === "files" || mode === "workflow" || mode === "emoji") {
     var sourcePrefixes = Array.isArray(raw.prefixes) ? raw.prefixes : [raw.prefix]
     extension.prefixes = []
     for (var i = 0; i < sourcePrefixes.length; i++) {
@@ -856,6 +902,17 @@ function normalizeExtension(raw) {
       extension.copyCommand = stringArray(raw.copyCommand)
       if (extension.copyCommand.length === 0) extension.copyCommand = ["wl-copy", "--", "{path}"]
       extension.copyFileCommand = stringArray(raw.copyFileCommand)
+    } else if (mode === "emoji") {
+      // Default to the emoji set Omarchy already ships so the bundled
+      // provider carries no duplicate dataset. An external provider can point
+      // `data` at its own file with {extensionDir}.
+      extension.data = emojiFileList(raw.data, [
+        "{omarchyPath}/shell/plugins/emojis/emojis.json",
+        "{extensionDir}/emojis.json"
+      ])
+      extension.groups = emojiFileList(raw.groups, [])
+      extension.copyCommand = stringArray(raw.copyCommand)
+      if (extension.copyCommand.length === 0) extension.copyCommand = ["wl-copy", "--", "{emoji}"]
     }
   } else {
     extension.prefixes = []
@@ -897,14 +954,59 @@ function lookupKey(value) {
   return "$" + String(value || "")
 }
 
-function resolveExtensions(extensions, providerPreferences, diagnostics, diagnosticState) {
+// A disabled capability is dropped before resolution rather than after, so it
+// leaves no shortcut, no prefix, and no provider to fall back to — a bundled
+// extension is always on disk, so this is the only way to remove one.
+// A capability whose `enabled` is written out in config.jsonc is pinned there:
+// the launcher's own toggle must not fight a value the user typed.
+function capabilityLockedByConfig(capability, configuredCapabilities) {
+  var configured = configuredCapabilities && typeof configuredCapabilities === "object"
+    ? configuredCapabilities : ({})
+  var setting = configured[String(capability || "")]
+  return !!setting && typeof setting === "object" && typeof setting.enabled === "boolean"
+}
+
+// Same objects, filtered — never copies. Callers compare extension identity
+// across catalog reloads, so a new object per evaluation would break rebinding.
+function enabledExtensions(extensions, disabledCapabilities) {
+  var values = Array.isArray(extensions) ? extensions : []
+  var disabled = disabledCapabilitySet(disabledCapabilities)
+  var result = []
+  for (var i = 0; i < values.length; i++)
+    if (values[i] && !disabled[lookupKey(values[i].capability)]) result.push(values[i])
+  return result
+}
+
+function disabledCapabilitySet(disabledCapabilities) {
+  var disabled = ({})
+  var values = Array.isArray(disabledCapabilities) ? disabledCapabilities : []
+  for (var i = 0; i < values.length; i++) {
+    var capability = typeof values[i] === "string" ? values[i].trim() : ""
+    if (capability) disabled[lookupKey(capability)] = true
+  }
+  return disabled
+}
+
+function resolveExtensions(extensions, providerPreferences, diagnostics, diagnosticState, disabledCapabilities) {
   var selected = ({})
   var order = []
   var values = Array.isArray(extensions) ? extensions : []
   var preferences = providerPreferences && typeof providerPreferences === "object" ? providerPreferences : ({})
+  var disabled = disabledCapabilitySet(disabledCapabilities)
+  var reported = ({})
   for (var i = 0; i < values.length; i++) {
     var extension = values[i]
     var key = lookupKey(extension.capability)
+    if (disabled[key]) {
+      // One diagnostic per capability, not per provider of it.
+      if (!reported[key]) {
+        reported[key] = true
+        appendExtensionDiagnostic(diagnostics,
+          "Capability '" + extension.capability + "' is disabled in configuration; its extensions were not loaded",
+          diagnosticState)
+      }
+      continue
+    }
     var current = selected[key]
     if (!current) order.push(key)
     var preferredId = typeof preferences[extension.capability] === "string" ? preferences[extension.capability] : ""
@@ -919,6 +1021,7 @@ function resolveExtensions(extensions, providerPreferences, diagnostics, diagnos
   }
   for (var capability in preferences) {
     if (!Object.prototype.hasOwnProperty.call(preferences, capability)) continue
+    if (disabled[lookupKey(capability)]) continue
     var requested = preferences[capability]
     var found = null
     for (var valueIndex = 0; valueIndex < values.length; valueIndex++)
@@ -975,6 +1078,11 @@ function parseExtensionCatalog(text) {
     ? parsed.providerPreferences : ({})
   var capabilityConfig = parsed && typeof parsed.capabilityConfig === "object" && !Array.isArray(parsed.capabilityConfig)
     ? parsed.capabilityConfig : ({})
+  var disabledCapabilities = parsed && Array.isArray(parsed.disabledCapabilities) ? parsed.disabledCapabilities : []
+  var configuredCapabilities = parsed && parsed.omalaunchConfig && typeof parsed.omalaunchConfig === "object"
+    && parsed.omalaunchConfig.capabilities && typeof parsed.omalaunchConfig.capabilities === "object"
+    && !Array.isArray(parsed.omalaunchConfig.capabilities)
+    ? parsed.omalaunchConfig.capabilities : ({})
   var extensions = []
   var ids = ({})
   if (values.length > MAX_EXTENSION_CATALOG_VALUES)
@@ -1000,7 +1108,7 @@ function parseExtensionCatalog(text) {
       appendExtensionDiagnostic(diagnostics, extension.id + " is missing: " + extension.missingRequires.join(", "), diagnosticState)
   }
 
-  var resolved = resolveExtensions(extensions, providerPreferences, diagnostics, diagnosticState)
+  var resolved = resolveExtensions(extensions, providerPreferences, diagnostics, diagnosticState, disabledCapabilities)
   var prefixes = ({})
   for (var j = 0; j < resolved.length; j++) {
     var current = resolved[j]
@@ -1013,7 +1121,13 @@ function parseExtensionCatalog(text) {
       else prefixes[prefixKey] = current.id + " (" + (current.source || "unknown source") + ")"
     }
   }
-  return { extensions: resolved, diagnostics: diagnostics, valid: true, complete: complete }
+  return {
+    extensions: resolved,
+    diagnostics: diagnostics,
+    configuredCapabilities: configuredCapabilities,
+    valid: true,
+    complete: complete
+  }
 }
 
 function parseExtensions(text) {
@@ -1341,6 +1455,336 @@ function matchesFileFavoriteQuery(entry, query) {
   return prepared.terms.length > 0
 }
 
+var EMOJI_FAVORITE_PREFIX = "emoji.favorite:"
+// The bundled dataset holds roughly 1.8k entries. Both caps exist so a
+// malformed or hostile dataset cannot make the grid unbounded.
+var MAX_EMOJI_DEFINITIONS = 8192
+var MAX_EMOJI_ROWS = 1000
+var MAX_EMOJI_SEQUENCE = 32
+
+// Pins are keyed by capability, like extension roots and file favorites, so
+// replacing the emoji provider keeps the user's pinned emoji.
+function emojiFavoriteId(emoji, capability) {
+  var value = String(emoji || "")
+  var behavior = String(capability || "").trim()
+  if (!value || !behavior) return ""
+  return EMOJI_FAVORITE_PREFIX + JSON.stringify([behavior, value])
+}
+
+function emojiFavorite(itemId) {
+  var value = String(itemId || "")
+  if (value.indexOf(EMOJI_FAVORITE_PREFIX) !== 0) return null
+  try {
+    var parsed = JSON.parse(value.substring(EMOJI_FAVORITE_PREFIX.length))
+    if (!Array.isArray(parsed) || parsed.length !== 2) return null
+    var capability = String(parsed[0] || "").trim()
+    var emoji = String(parsed[1] || "")
+    return capability && emoji ? { capability: capability, emoji: emoji } : null
+  } catch (e) { return null }
+}
+
+// Omarchy's dataset stores one space-joined keyword blob per emoji with no
+// separate display name, so searching and captioning both derive from it.
+function emojiSearchText(keywords) {
+  return String(keywords || "").toLowerCase().replace(/[_\-\/]+/g, " ").replace(/\s+/g, " ").trim()
+}
+
+// Repeated words are common in the source keywords ("grinning face smile
+// grinning happy"). Collapse them so the caption reads as a description.
+function emojiCaption(keywords) {
+  var text = emojiSearchText(keywords)
+  if (!text) return ""
+  var words = text.split(" ")
+  var seen = ({})
+  var out = []
+  for (var i = 0; i < words.length; i++) {
+    var key = lookupKey(words[i])
+    if (!words[i] || seen[key]) continue
+    seen[key] = true
+    out.push(words[i])
+  }
+  text = out.join(" ")
+  return text.charAt(0).toUpperCase() + text.substring(1)
+}
+
+function parseEmojiData(raw) {
+  var parsed
+  try { parsed = JSON.parse(String(raw || "")) } catch (e) { return [] }
+  var source = Array.isArray(parsed) ? parsed
+    : (parsed && Array.isArray(parsed.emojis) ? parsed.emojis : [])
+  var values = []
+  var seen = ({})
+  for (var i = 0; i < source.length && values.length < MAX_EMOJI_DEFINITIONS; i++) {
+    var entry = source[i]
+    if (!entry || typeof entry !== "object") continue
+    var emoji = String(entry.e || entry.emoji || "")
+    if (!emoji || emoji.length > MAX_EMOJI_SEQUENCE) continue
+    var key = lookupKey(emoji)
+    if (seen[key]) continue
+    seen[key] = true
+    var keywords = String(entry.k || entry.keywords || entry.name || "")
+    values.push({
+      emoji: emoji,
+      keywords: keywords,
+      search: emojiSearchText(keywords),
+      caption: emojiCaption(keywords)
+    })
+  }
+  return values
+}
+
+// Word-prefix matching, so "smi fac" finds "smiling face" while a term buried
+// mid-word does not. A leading keyword scores higher than a trailing one
+// because the source blobs put the primary name first.
+function emojiMatchScore(text, terms) {
+  if (!terms || terms.length === 0) return 0
+  var words = String(text || "").split(" ")
+  var total = 0
+  for (var i = 0; i < terms.length; i++) {
+    var term = terms[i]
+    if (!term) continue
+    var best = 0
+    for (var j = 0; j < words.length; j++) {
+      if (words[j] === term) best = Math.max(best, j === 0 ? 4 : 3)
+      else if (words[j].indexOf(term) === 0) best = Math.max(best, j === 0 ? 2 : 1)
+    }
+    if (best === 0) return -1
+    total += best
+  }
+  return total
+}
+
+// Match quality outranks pins and history: a search for "cat" must not lead
+// with a pinned emoji that does not match. Without a query every score is 0,
+// which leaves pinned emoji first and then most-used.
+function compareEmojiRows(a, b) {
+  if (a.score !== b.score) return b.score - a.score
+  if (!!a.starred !== !!b.starred) return a.starred ? -1 : 1
+  if (a.usageCount !== b.usageCount) return b.usageCount - a.usageCount
+  if (a.lastUsedAt !== b.lastUsedAt) return b.lastUsedAt - a.lastUsedAt
+  return a.order - b.order
+}
+
+function emojiRows(values, query, options) {
+  var source = Array.isArray(values) ? values : []
+  var settings = options || ({})
+  var capability = String(settings.capability || "")
+  var isStarred = typeof settings.isStarred === "function" ? settings.isStarred : null
+  var usageCount = typeof settings.usageCount === "function" ? settings.usageCount : null
+  var lastUsedAt = typeof settings.lastUsedAt === "function" ? settings.lastUsedAt : null
+  var limit = finiteExtensionNumber(settings.limit, MAX_EMOJI_ROWS)
+  if (limit === null || limit < 0) limit = MAX_EMOJI_ROWS
+  limit = Math.min(limit, MAX_EMOJI_ROWS)
+
+  var terms = prepareSearchQuery(query).terms
+  var rows = []
+  for (var i = 0; i < source.length; i++) {
+    var entry = source[i]
+    if (!entry || !entry.emoji) continue
+    var score = emojiMatchScore(entry.search, terms)
+    if (score < 0) continue
+    var itemId = emojiFavoriteId(entry.emoji, capability)
+    rows.push({
+      emoji: entry.emoji,
+      caption: entry.caption,
+      itemId: itemId,
+      starred: itemId && isStarred ? isStarred(itemId) === true : false,
+      usageCount: itemId && usageCount ? Math.max(0, Number(usageCount(itemId)) || 0) : 0,
+      lastUsedAt: itemId && lastUsedAt ? Math.max(0, Number(lastUsedAt(itemId)) || 0) : 0,
+      score: score,
+      order: i
+    })
+  }
+
+  rows.sort(compareEmojiRows)
+  return rows.length > limit ? rows.slice(0, limit) : rows
+}
+
+// Emoji file locations are resolved by the host rather than read from an
+// arbitrary string: only {omarchyPath} and {extensionDir} expand, and the
+// result must be absolute.
+function emojiFilePath(extension, omarchyPath, value) {
+  if (!extension || extension.mode !== "emoji") return ""
+  var path = String(value || "")
+  if (!path || path.indexOf("..") >= 0) return ""
+  path = path.replace(/\{omarchyPath\}/g, String(omarchyPath || ""))
+    .replace(/\{extensionDir\}/g, String(extension.sourceDir || ""))
+  return path.indexOf("/") === 0 ? path : ""
+}
+
+// A list of candidates rather than one path: the bundled provider prefers the
+// dataset Omarchy ships so it stays current, and falls back to its own copy so
+// disabling or removing that plugin cannot take the picker with it.
+function emojiFilePaths(extension, omarchyPath, values) {
+  if (!extension || extension.mode !== "emoji") return []
+  var source = Array.isArray(values) ? values : (values ? [values] : [])
+  var paths = []
+  for (var i = 0; i < source.length; i++) {
+    var resolved = emojiFilePath(extension, omarchyPath, source[i])
+    if (resolved && paths.indexOf(resolved) < 0) paths.push(resolved)
+  }
+  return paths
+}
+
+function emojiDataPaths(extension, omarchyPath) {
+  return emojiFilePaths(extension, omarchyPath, extension && extension.data)
+}
+
+function emojiGroupsPaths(extension, omarchyPath) {
+  return emojiFilePaths(extension, omarchyPath, extension && extension.groups)
+}
+
+var EMOJI_PINNED_SECTION = "Pinned"
+var EMOJI_FREQUENT_SECTION = "Frequently Used"
+var MAX_EMOJI_FREQUENT = 16
+var MAX_EMOJI_GROUPS = 64
+
+function parseEmojiGroups(raw) {
+  var parsed
+  try { parsed = JSON.parse(stripJsonc(String(raw || ""))) } catch (e) { return [] }
+  var source = Array.isArray(parsed) ? parsed
+    : (parsed && Array.isArray(parsed.groups) ? parsed.groups : [])
+  var groups = []
+  for (var i = 0; i < source.length && groups.length < MAX_EMOJI_GROUPS; i++) {
+    var entry = source[i]
+    if (!entry || typeof entry !== "object") continue
+    var label = String(entry.label || "").trim()
+    var start = String(entry.start || "")
+    if (!label || !start || start.length > MAX_EMOJI_SEQUENCE) continue
+    groups.push({ label: label, start: start })
+  }
+  return groups
+}
+
+// The bundled dataset is in Unicode CLDR group order, so a group is everything
+// from its first emoji up to the next group's. That keeps the boundary file
+// tiny and categorizes emoji added inside a group for free — but it is only
+// true while the dataset stays in that order, so an out-of-order or missing
+// boundary abandons grouping rather than mislabeling half the grid.
+function emojiGroupLabels(values, groups) {
+  var source = Array.isArray(values) ? values : []
+  var boundaries = Array.isArray(groups) ? groups : []
+  if (source.length === 0 || boundaries.length === 0) return null
+
+  var starts = []
+  var previous = -1
+  for (var i = 0; i < boundaries.length; i++) {
+    var at = -1
+    for (var j = previous + 1; j < source.length; j++) {
+      if (source[j] && source[j].emoji === boundaries[i].start) { at = j; break }
+    }
+    if (at < 0 || at <= previous) return null
+    starts.push(at)
+    previous = at
+  }
+  // Anything before the first boundary is uncategorized, which means the file
+  // does not describe this dataset.
+  if (starts[0] !== 0) return null
+
+  var labels = []
+  var current = 0
+  for (var k = 0; k < source.length; k++) {
+    while (current + 1 < starts.length && k >= starts[current + 1]) current++
+    labels.push(boundaries[current].label)
+  }
+  return labels
+}
+
+// Lay a run of cells out into rows of `columns`, tagged with one section label.
+function appendEmojiSection(cells, rows, section, entries, columns, options) {
+  if (entries.length === 0) return
+  var width = Math.max(1, columns)
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i]
+    var itemId = emojiFavoriteId(entry.emoji, options.capability)
+    if (i % width === 0) rows.push({ section: section, start: cells.length, count: 0 })
+    rows[rows.length - 1].count += 1
+    cells.push({
+      emoji: entry.emoji,
+      caption: entry.caption,
+      itemId: itemId,
+      starred: itemId && options.isStarred ? options.isStarred(itemId) === true : false,
+      row: rows.length - 1,
+      column: i % width
+    })
+  }
+}
+
+// A query is answered by one ranked list: category order would fight the
+// ranking, so headers only appear while browsing.
+function emojiSections(values, query, options) {
+  var source = Array.isArray(values) ? values : []
+  var settings = options || ({})
+  var columns = Math.max(1, finiteExtensionNumber(settings.columns, 8) || 8)
+  var context = {
+    capability: String(settings.capability || ""),
+    isStarred: typeof settings.isStarred === "function" ? settings.isStarred : null
+  }
+  var usageCount = typeof settings.usageCount === "function" ? settings.usageCount : null
+  var lastUsedAt = typeof settings.lastUsedAt === "function" ? settings.lastUsedAt : null
+  var cells = []
+  var rows = []
+
+  if (prepareSearchQuery(query).terms.length > 0) {
+    appendEmojiSection(cells, rows, "", emojiRows(source, query, settings), columns, context)
+    return { cells: cells, rows: rows, sectioned: false }
+  }
+
+  var pinned = []
+  var frequent = []
+  if (context.isStarred || usageCount) {
+    for (var i = 0; i < source.length; i++) {
+      var entry = source[i]
+      if (!entry || !entry.emoji) continue
+      var itemId = emojiFavoriteId(entry.emoji, context.capability)
+      if (!itemId) continue
+      if (context.isStarred && context.isStarred(itemId) === true) {
+        pinned.push(entry)
+        continue
+      }
+      var count = usageCount ? Math.max(0, Number(usageCount(itemId)) || 0) : 0
+      if (count > 0) {
+        frequent.push({
+          entry: entry,
+          count: count,
+          lastUsedAt: lastUsedAt ? Math.max(0, Number(lastUsedAt(itemId)) || 0) : 0,
+          order: i
+        })
+      }
+    }
+    frequent.sort(function(a, b) {
+      if (a.count !== b.count) return b.count - a.count
+      if (a.lastUsedAt !== b.lastUsedAt) return b.lastUsedAt - a.lastUsedAt
+      return a.order - b.order
+    })
+    frequent = frequent.slice(0, MAX_EMOJI_FREQUENT).map(function(value) { return value.entry })
+  }
+
+  appendEmojiSection(cells, rows, EMOJI_PINNED_SECTION, pinned, columns, context)
+  appendEmojiSection(cells, rows, EMOJI_FREQUENT_SECTION, frequent, columns, context)
+
+  // Pinned and frequent emoji stay listed in their own category too, so
+  // browsing a category never has holes in it.
+  var labels = emojiGroupLabels(source, settings.groups)
+  if (!labels) {
+    appendEmojiSection(cells, rows, "", source, columns, context)
+    return { cells: cells, rows: rows, sectioned: pinned.length > 0 || frequent.length > 0 }
+  }
+
+  var runLabel = ""
+  var run = []
+  for (var k = 0; k < source.length; k++) {
+    if (labels[k] !== runLabel) {
+      appendEmojiSection(cells, rows, runLabel, run, columns, context)
+      runLabel = labels[k]
+      run = []
+    }
+    if (source[k] && source[k].emoji) run.push(source[k])
+  }
+  appendEmojiSection(cells, rows, runLabel, run, columns, context)
+  return { cells: cells, rows: rows, sectioned: true }
+}
+
 function displayRow(items, itemOrder, checkedResults, entry, detail, score, section, metadata) {
   var target = entry.kind === "link" ? entry.target : entry.id
   return {
@@ -1361,6 +1805,9 @@ function displayRow(items, itemOrder, checkedResults, entry, detail, score, sect
     score: score || 0,
     section: section || "",
     starred: false,
+    // Every row carries the role so the ListModel's role set stays uniform
+    // regardless of which build path produced the row.
+    disabled: false,
     matchPriority: 0,
     usageCount: 0,
     lastUsedAt: 0
@@ -1489,16 +1936,19 @@ function actionBarHints(state) {
   else if (value.workflowInputActive) hints.push({ label: "Continue", shortcut: "Enter" })
   else if (value.hasSelection) {
     var primary = value.actionPanelActive ? "Run"
-      : (value.directoryPickerActive || value.dmenuActive ? "Select"
-        : (value.workflowActive ? "Continue" : "Open"))
+      : (value.emojiPickerActive ? "Paste"
+        : (value.directoryPickerActive || value.dmenuActive ? "Select"
+          : (value.workflowActive ? "Continue" : "Open")))
     hints.push({ label: primary, shortcut: "Enter" })
   }
 
+  if (value.emojiPickerActive && value.hasSelection) hints.push({ label: "Copy", shortcut: "Ctrl C" })
   if (value.fileBrowserActive && value.hasSelection && !value.directoryPickerActive && !value.actionPanelActive) {
     hints.push({ label: "Actions", shortcut: "Ctrl K" })
     hints.push({ label: "Copy Path", shortcut: "Ctrl C" })
   }
   if (value.canStar) hints.push({ label: value.starred ? "Unstar" : "Star", shortcut: "Ctrl S" })
+  if (value.canToggleCapability) hints.push({ label: value.capabilityDisabled ? "Enable" : "Disable", shortcut: "Del" })
 
   return hints
 }
@@ -1566,13 +2016,18 @@ if (typeof module !== "undefined") {
     extensionRootId: extensionRootId,
     extensionRootCapability: extensionRootCapability,
     extensionRootItem: extensionRootItem,
+    extensionRootDetail: extensionRootDetail,
     sortExtensionRootRows: sortExtensionRootRows,
     extensionRootActivation: extensionRootActivation,
+    extensionRouteCapability: extensionRouteCapability,
     extensionRootInput: extensionRootInput,
     focusedExtensionQuery: focusedExtensionQuery,
     focusedPrefixMatch: focusedPrefixMatch,
     normalizeExtension: normalizeExtension,
     resolveExtensions: resolveExtensions,
+    disabledCapabilitySet: disabledCapabilitySet,
+    enabledExtensions: enabledExtensions,
+    capabilityLockedByConfig: capabilityLockedByConfig,
     parseExtensionCatalog: parseExtensionCatalog,
     parseExtensions: parseExtensions,
     matchesRules: matchesRules,
@@ -1600,6 +2055,20 @@ if (typeof module !== "undefined") {
     fileFavoriteLabel: fileFavoriteLabel,
     fileFavoriteItem: fileFavoriteItem,
     matchesFileFavoriteQuery: matchesFileFavoriteQuery,
+    emojiFavoriteId: emojiFavoriteId,
+    emojiFavorite: emojiFavorite,
+    emojiSearchText: emojiSearchText,
+    emojiCaption: emojiCaption,
+    parseEmojiData: parseEmojiData,
+    emojiMatchScore: emojiMatchScore,
+    compareEmojiRows: compareEmojiRows,
+    emojiRows: emojiRows,
+    emojiFileList: emojiFileList,
+    emojiDataPaths: emojiDataPaths,
+    emojiGroupsPaths: emojiGroupsPaths,
+    parseEmojiGroups: parseEmojiGroups,
+    emojiGroupLabels: emojiGroupLabels,
+    emojiSections: emojiSections,
     displayRow: displayRow,
     actionBarHints: actionBarHints,
     compactActionBarHints: compactActionBarHints

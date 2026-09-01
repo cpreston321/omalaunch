@@ -16,11 +16,25 @@ Extension shortcuts do not otherwise appear on the launcher's starting view. Pre
 Activating a shortcut enters the interface appropriate to its mode:
 
 - `files` opens the file browser.
+- `emoji` opens the emoji grid.
 - A prefixed `query` or `prefix` extension focuses input with its prefix prepared.
 - A query-only extension focuses an empty, extension-specific input (for example Calculator and Currency conversion).
 - `workflow` opens its first host-rendered workflow stage.
 
 Unavailable extensions remain listed with their missing dependency detail. Only dependencies in Omalaunch's own trusted setup allow-list offer an installation confirmation; other unavailable shortcuts cannot dispatch a command.
+
+A summon may name an extension capability instead of a menu id, so a compositor
+keybinding can open one directly:
+
+```bash
+omarchy-shell shell summon quantumfire.omalaunch '{"extension":"emoji"}'
+```
+
+The capability is resolved through the same replacement rules as its shortcut,
+so a configured or higher-priority provider answers the summon. The extension
+catalog loads asynchronously; the request is held until it resolves and then
+enters the extension, so the launcher never appears to ignore the keybinding.
+An unknown capability is diagnosed and leaves the ordinary starting view.
 
 ## External plugin manifest
 
@@ -134,6 +148,101 @@ File browser extensions provide navigation, recursive search, opening, and path 
 
 Ctrl+K opens the contextual Action Panel. `command` opens files, `directoryCommand` opens directories in the file manager, `terminalCommand` opens a terminal, `copyCommand` copies the path, and `copyFileCommand` places a file URI on the clipboard. All command fields support `{path}`. Files and directories can be starred from the Action Panel or with Ctrl+S and then opened directly from the launcher’s starting view. Each star retains the extension capability that created it, so the currently selected provider for that capability handles it. The bundled implementation starts at the home directory, uses `fd` traversal and fzf path ranking, omits hidden and ignored paths, and limits each ranked result set to 100 entries. Exact basename matches rank before paths that match only through a parent directory, so many descendants cannot hide a matching file or directory. Recursive candidates are indexed once per active directory and reused while typing; the index refreshes after 30 seconds or when navigation changes directories.
 
+## Emoji picker extension
+
+Emoji picker extensions contribute a searchable grid of emoji:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "example.emoji",
+  "capability": "emoji",
+  "mode": "emoji",
+  "label": "Emoji",
+  "prefixes": ["emoji"],
+  "icon": "",
+  "description": "Press Enter to paste",
+  "requires": ["omarchy-menu-emoji-insert", "wtype", "wl-copy"],
+  "data": ["{extensionDir}/emojis.json"],
+  "groups": "{extensionDir}/groups.json",
+  "command": ["omarchy-menu-emoji-insert", "{emoji}"],
+  "copyCommand": ["wl-copy", "--", "{emoji}"]
+}
+```
+
+`data` is the dataset the grid searches. It may be one path or an ordered list
+of at most eight candidates, read in order until one loads and parses to at
+least one emoji; a file that is missing, unreadable, or parses to nothing falls
+through to the next. Only `{omarchyPath}` and `{extensionDir}` expand, each
+result must be an absolute path, and a candidate containing `..` is dropped
+without discarding the safe ones.
+
+The bundled provider lists two: the set Omarchy ships, then its own copy.
+Omarchy's comes first so the data stays current with the system, and the
+bundled copy means disabling or removing the `omarchy.emojis` plugin, or an
+Omarchy release that stops shipping it, cannot take the picker with it.
+
+The file holds an array of `{"e": "😀", "k": "grinning face smile happy"}`
+objects; `{"emoji": …, "keywords": …}` and an `{"emojis": [ … ]}` wrapper are
+also accepted. Duplicate glyphs, empty glyphs, non-objects, and malformed JSON
+are dropped, and the grid reads at most 8192 entries and displays at most 1000
+results.
+
+`groups` names an optional category file and resolves under the same rules,
+including the candidate list. It
+lists the first emoji of each category, in the order the dataset uses:
+
+```json
+{
+  "version": 1,
+  "groups": [
+    { "label": "Smileys & Emotion", "start": "😀" },
+    { "label": "People & Body", "start": "👋" }
+  ]
+}
+```
+
+A category runs from its first emoji up to the next one's, so the file stays
+small and emoji added inside a category are grouped without touching it. That
+holds only while the dataset keeps that order, so a boundary that is missing,
+out of order, or not at the start of the dataset abandons grouping entirely and
+leaves one flat grid rather than mislabeling half of it. JSONC comments and
+trailing commas are accepted.
+
+While browsing, the grid leads with **Pinned**, then **Frequently Used** — the
+sixteen most-used emoji — and then each category. Pinned and frequently used
+emoji remain listed in their own category too, so a category is never missing
+entries. A query replaces all of it with one ranked, unlabelled list, because
+category order and ranking cannot both hold.
+
+`command` pastes the selected emoji and `copyCommand` places it on the
+clipboard; both support `{emoji}`. Declare every executable the paste path
+needs, including the ones a helper script calls: Omarchy's insert helper
+swallows a `wtype` failure, so an undeclared `wtype` would make pasting a
+silent no-op instead of a visible missing dependency. Enter pastes and closes the launcher, Ctrl+C
+copies and keeps the grid open so several emoji can be collected in one
+session. Both record usage, so recently and frequently used emoji lead an
+unfiltered grid.
+
+Searching matches whole words and word prefixes across an entry's keywords —
+`smi fac` finds `smiling face`, and every term must match. A keyword at the
+front of an entry outranks one at the back. Ctrl+S pins the selected emoji to
+the front of the grid; pins are keyed by capability, so replacing the provider
+preserves them. Pinned emoji stay inside the picker rather than appearing on
+the launcher's starting view, and match quality always outranks pins and usage
+history, so a search never leads with an emoji that does not match it.
+
+Left and Right move one cell, Up and Down move one row, PageUp and PageDown
+move one screen, and Escape clears the query and then leaves the picker. Rows
+are eight emoji wide. Vertical movement is walked through the layout rather
+than by adding a column count, because a category's last row can be short and
+a header breaks the stride.
+
+A picker reached through a summon route has no launcher behind it, so leaving
+it closes the launcher instead of revealing a starting view the keybinding
+never asked for. Reached from the launcher, leaving returns there as usual.
+The same applies to the file browser and to workflows.
+
 ## Workflow extension
 
 Workflow extensions contribute a launcher entry and a bounded tree of host-rendered stages. They can compose menus, text input, and Omalaunch's host-provided directory picker without shipping QML or implementing filesystem navigation:
@@ -224,7 +333,7 @@ The highest-priority matching live-query extension runs. Live queries debounce f
 - `schemaVersion`: Extension format version; currently `1`.
 - `id`: Stable, unique extension identifier.
 - `capability`: Stable behavior being supplied or replaced; defaults to `id`.
-- `mode`: `prefix`, `query`, `files`, or `workflow`; defaults to `prefix`.
+- `mode`: `prefix`, `query`, `files`, `workflow`, or `emoji`; defaults to `prefix`.
 - `label`, `icon`, `iconFont`, `description`: Result presentation.
 - `rootDescription`: Optional description for the extension shortcut in Extensions and global search. Use it when activating the extension differs from activating one of its results; defaults to `description`.
 - `priority`: Selection priority; defaults to `0`.
@@ -250,9 +359,41 @@ Select a provider by extension `id` in `config.jsonc`. The key is the capability
   "version": 1,
   "capabilities": {
     "files": { "provider": "example.files" },
+    // Bundled extensions ship enabled and cannot be uninstalled, so this is
+    // how one is turned off.
+    "emoji": { "enabled": false },
   },
 }
 ```
+
+Select a row in **Extensions** and press Delete to switch its capability off
+from the launcher itself. That writes
+`~/.local/state/omarchy/omalaunch-capabilities.json`, alongside the favorites
+and usage stores; `config.jsonc` is hand-authored and Omalaunch never rewrites
+it. A capability whose `enabled` is written out in `config.jsonc` is pinned
+there, so its row reports **Disabled in configuration** and Delete does
+nothing — the configured value always wins.
+
+A capability switched off from the row stays listed in **Extensions**, dimmed
+and labelled, because that row is the only way to switch it back on. It is
+absent from everywhere else: the starting view, global search, prefixes, live
+queries, and activation. An external extension's dialog also names
+`omarchy plugin remove <id>`, since disabling leaves its plugin installed.
+
+`enabled` defaults to true. Setting it to false drops every provider of that
+capability before resolution, so it leaves no shortcut in **Extensions** at
+all — not even a dimmed one — no prefix, no global-search entry, and nothing
+for another provider to fall back to. It applies to bundled and external
+providers alike; an external plugin can also be removed outright with
+`omarchy plugin remove`, but a bundled extension has no other off switch.
+
+The value must be a real boolean — a string like `"false"` is refused with a
+diagnostic rather than treated as truthy, so a typo cannot quietly remove a
+feature. A capability may carry `enabled`, `provider`, or both; a `provider`
+recorded alongside `enabled: false` is kept, so switching the capability back
+on restores the selection rather than losing it, and it is not reported as a
+misconfiguration while the capability is off. Removing the key, or setting it
+to true, restores the capability on the next launcher open.
 
 Host-supported capability settings are independent of the selected provider and use one file per capability. Omalaunch does not load arbitrary configuration files for external capabilities. The first supported file is `~/.config/omarchy/omalaunch/extensions/files.jsonc`:
 

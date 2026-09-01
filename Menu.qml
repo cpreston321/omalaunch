@@ -20,6 +20,14 @@ Item {
   // `omarchy-shell shell summon quantumfire.omalaunch ...` and close() when hidden.
   property string pendingInitialMenu: "root"
   property bool routePendingForMenuSources: false
+  // A summon may name an extension capability instead of a menu id, so a
+  // hotkey can open one directly. The catalog loads asynchronously, so the
+  // intent is held until whichever settles last — the route or the catalog.
+  property string pendingExtensionCapability: ""
+  // True while the session exists only to show a routed extension. Such a
+  // session has no launcher behind it, so backing out of the extension closes
+  // instead of revealing a starting view the user never asked for.
+  property bool routedExtensionSession: false
 
   function open(payloadJson) {
     // Parse first so resetting the old surface cannot discard the incoming
@@ -35,6 +43,7 @@ Item {
     if (payload.mode === "select" || payload.mode === "input") {
       root.openDmenu(payload)
     } else {
+      root.pendingExtensionCapability = MenuModel.extensionRouteCapability(payload.extension)
       root.openRoute(payload.initialMenu || payload.menu || "root")
     }
   }
@@ -69,6 +78,14 @@ Item {
   property bool defaultMenuReloadPending: false
   property bool userMenuReloadPending: false
   property var extensions: []
+  // Capabilities the user configured explicitly, so the launcher's own toggle
+  // can defer to a value they typed.
+  property var configuredCapabilities: ({})
+  // Search, prefixes, live queries, and activation all work from the enabled
+  // subset. The full list survives only so Extensions can still list a
+  // disabled row for switching it back on.
+  readonly property var enabledExtensions: MenuModel.enabledExtensions(root.extensions, root.stateDisabledCapabilities)
+  readonly property var stateDisabledCapabilities: root.disabledCapabilityList(capabilities.disabledIds, root.configuredCapabilities)
   property var extensionDiagnostics: []
   property var unavailableResultExtension: null
   property bool extensionsReloadPending: false
@@ -126,6 +143,14 @@ Item {
   property var workflowContext: ({})
   property var workflowStack: []
   property int workflowGeneration: 0
+
+  property bool emojiPickerActive: false
+  property var emojiExtension: null
+  // The dataset is static, so it is parsed once per catalog rather than per
+  // picker session. Keep it outside the open/close state reset.
+  property var emojiData: []
+  property var emojiGroups: []
+  property string emojiCopyFeedback: ""
   readonly property int workflowActionTimeoutMs: 30 * 1000
   readonly property int workflowTerminationGraceMs: 1000
   property int fileScanSerial: 0
@@ -174,6 +199,8 @@ Item {
   }
   property bool deleteConfirmOpen: false
   property bool dependencyConfirmOpen: false
+  property bool capabilityConfirmOpen: false
+  property var capabilityTarget: null
   property string pendingStarSelectionId: ""
   property var deleteTarget: null
   property var dependencyTarget: null
@@ -184,12 +211,15 @@ Item {
     deleteTarget = null
     dependencyConfirmOpen = false
     dependencyTarget = null
+    capabilityConfirmOpen = false
+    capabilityTarget = null
   }
   // Bound to the central [menu] section in shell.toml via Color.qml.
   // Each color already includes its alpha companion (composed in the
   // singleton), so consumers can drop them straight into a Rectangle.
   LauncherFavorites { id: favorites }
   LauncherUsage { id: usage }
+  LauncherCapabilities { id: capabilities }
   CurrencyExtension.CurrencyRates { id: currencyRates }
 
   Connections {
@@ -226,13 +256,71 @@ Item {
   property int dividerHeight: Style.space(17)
   property bool searchDivider: false
   property int layoutSerial: 0
+
+  // Emoji grid geometry. A fixed eight columns of square cells: the glyph is
+  // the whole content of a cell, so it should be as large as the card allows
+  // rather than sized to a row of text.
+  readonly property int emojiColumns: 8
+  // Measured from the list rather than derived from the card: the card's own
+  // border insets are not part of contentMargin, and an approximation here
+  // leaves a visible gap at the right edge of every row.
+  property int emojiListWidth: 0
+  readonly property int emojiCellSize: Math.max(Style.space(30), Math.floor(
+    (root.emojiListWidth > 0 ? root.emojiListWidth : root.cardWidth - root.contentMargin * 2)
+      / root.emojiColumns))
+  readonly property int emojiCellPeek: Math.round(root.emojiCellSize * 0.35)
+  readonly property int emojiSectionHeight: Math.max(Style.space(26), Style.font.bodySmall + Style.spacing.md)
+  // Resolved independently of an active session so the files can load as soon
+  // as the catalog settles.
+  readonly property var emojiProvider: root.emojiExtensionForCapability("emoji")
+  // Each file is a list of candidates read in order, so the picker survives
+  // the provider's preferred source disappearing.
+  readonly property var emojiDataPaths: MenuModel.emojiDataPaths(root.emojiProvider, root.omarchyPath)
+  readonly property var emojiGroupsPaths: MenuModel.emojiGroupsPaths(root.emojiProvider, root.omarchyPath)
+  property int emojiDataCandidate: 0
+  property int emojiGroupsCandidate: 0
+  readonly property string emojiDataPath: root.emojiDataCandidate < root.emojiDataPaths.length
+    ? root.emojiDataPaths[root.emojiDataCandidate] : ""
+  readonly property string emojiGroupsPath: root.emojiGroupsCandidate < root.emojiGroupsPaths.length
+    ? root.emojiGroupsPaths[root.emojiGroupsCandidate] : ""
+  onEmojiDataPathsChanged: root.emojiDataCandidate = 0
+  onEmojiGroupsPathsChanged: root.emojiGroupsCandidate = 0
+  // Only laid out while the picker is open: pins and usage change on every
+  // launcher action, and re-sectioning the whole dataset then would be waste.
+  readonly property var emojiLayout: root.emojiPickerActive
+    ? root.emojiLayoutFor(root.emojiData, root.emojiGroups, root.filterText, root.emojiExtension,
+      root.emojiColumns, favorites.starredIds, usage.records)
+    : ({ cells: [], rows: [], sectioned: false })
+
   property int cardWidth: Math.min(root.dmenuActive
     ? Style.space(root.dmenuWidth)
     : Style.space(root.imagePreviewActive ? 900 : 600), panel.width - Style.gapsOut * 2)
-  readonly property bool emptyRoot: !root.dmenuActive && root.activeMenu === "root" && !root.filterText && displayModel.count === 0
-  property int visibleRowsHeight: root.emptyRoot || root.workflowInputActive ? 0 : (root.dmenuActive ? dmenuRowListHeight(layoutSerial, displayModel.count, filterText) : rowListHeight(layoutSerial, displayModel.count, filterText, searchDivider))
+  readonly property bool emptyRoot: !root.dmenuActive && !root.emojiPickerActive && root.activeMenu === "root" && !root.filterText && displayModel.count === 0
+  property int visibleRowsHeight: root.emptyRoot || root.workflowInputActive ? 0
+    : (root.emojiPickerActive ? emojiGridHeight(layoutSerial, emojiRowModel.count)
+      : (root.dmenuActive ? dmenuRowListHeight(layoutSerial, displayModel.count, filterText) : rowListHeight(layoutSerial, displayModel.count, filterText, searchDivider)))
   property int cardHeight: Math.min(contentMargin + actionBarBottomPadding + headerHeight + actionBarHeight + contentSpacing
     + (visibleRowsHeight > 0 ? contentSpacing + visibleRowsHeight : 0), panel.height - Style.gapsOut * 2)
+
+  // The emoji picker owns its own grid model, so selection-dependent state
+  // resolves against whichever model is on screen. Every model read stays
+  // bounded inside its own expression: a derived selection property can still
+  // hold a stale count while a model is mid-rebuild.
+  readonly property int selectionCount: root.emojiPickerActive ? root.emojiLayout.cells.length : displayModel.count
+  readonly property var selectedEmojiRow: root.emojiPickerActive && root.cursorActive
+    ? root.emojiCell(root.selectedIndex) : null
+
+  // Capability toggling is offered only on an unfiltered Extensions row, and
+  // never for a capability whose value is pinned in configuration.
+  readonly property string toggleableCapability: !root.dmenuActive && !root.emojiPickerActive
+    && !root.fileBrowserActive && !root.workflowActive && !root.actionPanelActive
+    && root.activeMenu === "extensions" && !root.filterText && capabilities.loaded
+    && displayModel.count > 0 && root.cursorActive
+    && root.selectedIndex >= 0 && root.selectedIndex < displayModel.count
+    && !MenuModel.capabilityLockedByConfig(
+      MenuModel.extensionRootCapability(displayModel.get(root.selectedIndex).itemId),
+      root.configuredCapabilities)
+    ? MenuModel.extensionRootCapability(displayModel.get(root.selectedIndex).itemId) : ""
 
   readonly property var actionBarHints: MenuModel.actionBarHints({
     dmenuActive: root.dmenuActive,
@@ -242,20 +330,31 @@ Item {
     fileBrowserActive: root.fileBrowserActive,
     directoryPickerActive: root.directoryPickerActive,
     actionPanelActive: root.actionPanelActive,
+    emojiPickerActive: root.emojiPickerActive,
     focusedExtension: !!root.focusedExtension,
-    hasSelection: displayModel.count > 0 && root.cursorActive,
-    canStar: !root.dmenuActive && !root.workflowActive && !root.actionPanelActive
-      && displayModel.count > 0 && root.cursorActive && root.selectedIndex >= 0
-      && root.selectedIndex < displayModel.count
-      && (root.fileBrowserActive || (displayModel.get(root.selectedIndex).itemId !== "omarchy"
-        && displayModel.get(root.selectedIndex).itemId !== "extensions"
-        && displayModel.get(root.selectedIndex).itemId !== "extension.result"
-        && displayModel.get(root.selectedIndex).itemId !== "extension.result.pending")),
-    starred: displayModel.count > 0 && root.cursorActive && root.selectedIndex >= 0
-      && root.selectedIndex < displayModel.count && displayModel.get(root.selectedIndex).starred
+    hasSelection: root.selectionCount > 0 && root.cursorActive,
+    canStar: root.emojiPickerActive
+      ? (!!root.selectedEmojiRow && favorites.loaded)
+      : (!root.dmenuActive && !root.workflowActive && !root.actionPanelActive
+        && displayModel.count > 0 && root.cursorActive && root.selectedIndex >= 0
+        && root.selectedIndex < displayModel.count
+        && (root.fileBrowserActive || (displayModel.get(root.selectedIndex).itemId !== "omarchy"
+          && displayModel.get(root.selectedIndex).itemId !== "extensions"
+          && displayModel.get(root.selectedIndex).itemId !== "extension.result"
+          && displayModel.get(root.selectedIndex).itemId !== "extension.result.pending"))),
+    starred: root.emojiPickerActive
+      ? (!!root.selectedEmojiRow && root.selectedEmojiRow.starred)
+      : (displayModel.count > 0 && root.cursorActive && root.selectedIndex >= 0
+        && root.selectedIndex < displayModel.count && displayModel.get(root.selectedIndex).starred),
+    canToggleCapability: root.toggleableCapability.length > 0,
+    capabilityDisabled: root.toggleableCapability.length > 0
+      && root.isCapabilityDisabled(root.toggleableCapability)
   })
   readonly property var displayedActionBarHints: root.cardWidth < Style.space(560)
     ? MenuModel.compactActionBarHints(root.actionBarHints) : root.actionBarHints
+  // Applied on both sides of an action-bar divider so it sits centred in the
+  // gap rather than hugging the hint that follows it.
+  readonly property int actionBarDividerGap: Style.space(12)
 
   function finishRequest(selection) {
     if (!root.requestActive || !root.doneFile) {
@@ -323,8 +422,9 @@ Item {
 
   // Menu rows only surface their detail while a search is narrowing them;
   // dmenu rows carry caller-supplied subtext that must always be visible.
-  function rowHeightForDetail(detail) {
-    return (root.filterText || root.dmenuActive) && detail ? root.detailRowHeight : root.baseRowHeight
+  function rowHeightForDetail(detail, disabled) {
+    return ((root.filterText || root.dmenuActive || disabled === true) && detail)
+      ? root.detailRowHeight : root.baseRowHeight
   }
 
   // Height the card can devote to rows below its pinned top edge.
@@ -363,7 +463,7 @@ Item {
       var row = displayModel.get(i)
       if (i > 0) total += root.rowSpacing
       if (row.section === "drilldown" && previousSection !== "drilldown") total += root.dividerHeight
-      total += root.rowHeightForDetail(row.detail)
+      total += root.rowHeightForDetail(row.detail, row.disabled)
       previousSection = row.section
       totals.push(total)
     }
@@ -387,6 +487,34 @@ Item {
     }
 
     return foldedListHeight(totals, available)
+  }
+
+  // Like foldedListHeight, but over rows of glyphs with section headers
+  // between them. End the grid mid-row so a clipped row signals the fold.
+  function emojiGridHeight(_serial, _count) {
+    var rows = root.emojiLayout.rows
+    if (rows.length === 0) return root.emojiCellSize
+
+    var totals = []
+    var total = 0
+    var previousSection = null
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].section !== previousSection) {
+        if (rows[i].section.length > 0) total += root.emojiSectionHeight
+        previousSection = rows[i].section
+      }
+      total += root.emojiCellSize
+      totals.push(total)
+    }
+
+    var available = root.availableRowsHeight()
+    if (totals[totals.length - 1] <= available) return totals[totals.length - 1]
+
+    var full = 0
+    while (full < totals.length && totals[full] <= available) full++
+    while (full > 1 && totals[full - 1] + root.emojiCellPeek > available) full--
+    if (full < 1) return Math.max(available, root.emojiCellSize)
+    return totals[full - 1] + root.emojiCellPeek
   }
 
   function item(id) {
@@ -454,8 +582,8 @@ Item {
   function isPotentialExtensionQuery(value) {
     var query = String(value || "")
     return /^\s*[+-]?(?:\d|\.\d)/.test(query)
-      || MenuModel.queryExtension(root.extensions, query) !== null
-      || MenuModel.unavailableQueryExtension(root.extensions, query) !== null
+      || MenuModel.queryExtension(root.enabledExtensions, query) !== null
+      || MenuModel.unavailableQueryExtension(root.enabledExtensions, query) !== null
   }
 
   function stopExtensionQuery(reason) {
@@ -537,7 +665,7 @@ Item {
     }
 
     var query = root.effectiveExtensionQuery()
-    var queryCatalog = root.focusedExtension ? [root.focusedExtension] : root.extensions
+    var queryCatalog = root.focusedExtension ? [root.focusedExtension] : root.enabledExtensions
     root.resultExtension = MenuModel.queryExtension(queryCatalog, query)
     root.unavailableResultExtension = MenuModel.unavailableQueryExtension(queryCatalog, query)
     if (root.resultExtension) extensionQueryTimer.restart()
@@ -552,10 +680,46 @@ Item {
     return null
   }
 
+  // Consumed from whichever of the two asynchronous paths finishes last, so a
+  // summon lands whether the catalog was already warm or still loading.
+  function enterPendingExtension() {
+    var capability = root.pendingExtensionCapability
+    if (!capability || !root.opened || root.dmenuActive) return
+    // An empty catalog means it has not loaded yet, not that the capability is
+    // missing. Stay pending; the loader calls back when it exits.
+    if (root.extensions.length === 0) return
+    root.pendingExtensionCapability = ""
+    var extension = root.extensionByCapability(capability)
+    if (!extension) {
+      console.warn("Omalaunch: summon requested unknown extension capability '" + capability + "'")
+      return
+    }
+    root.routedExtensionSession = true
+    root.activateExtensionRoot(extension)
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
   function extensionByCapability(capability) {
-    for (var i = 0; i < root.extensions.length; i++)
-      if (root.extensions[i].capability === capability) return root.extensions[i]
+    for (var i = 0; i < root.enabledExtensions.length; i++)
+      if (root.enabledExtensions[i].capability === capability) return root.enabledExtensions[i]
     return null
+  }
+
+  // A config-pinned capability is not the launcher's to toggle, so its state
+  // entry is ignored rather than silently fighting the configured value.
+  function disabledCapabilityList(disabledIds, configured) {
+    var result = []
+    for (var capability in disabledIds) {
+      if (!Object.prototype.hasOwnProperty.call(disabledIds, capability)) continue
+      if (disabledIds[capability] !== true) continue
+      if (MenuModel.capabilityLockedByConfig(capability, configured)) continue
+      result.push(capability)
+    }
+    return result
+  }
+
+  function isCapabilityDisabled(capability) {
+    return root.stateDisabledCapabilities.indexOf(String(capability || "")) >= 0
   }
 
   function extensionForRootId(itemId) {
@@ -578,6 +742,7 @@ Item {
 
   function enterFocusedExtension(extension) {
     if (!extension || !extension.available) return
+    if (root.emojiPickerActive) root.leaveEmojiPicker(false)
     root.focusedExtension = extension
     root.activeMenu = "extensions"
     root.navStack = ["root"]
@@ -601,6 +766,7 @@ Item {
 
   function activateExtensionRoot(extension) {
     if (!extension) return
+    if (root.isCapabilityDisabled(extension.capability)) return
     if (!extension.available) {
       var setup = MenuModel.dependencySetup(extension)
       if (setup) {
@@ -612,6 +778,7 @@ Item {
     var activation = MenuModel.extensionRootActivation(extension)
     if (activation === "files") root.enterFileBrowser(extension)
     else if (activation === "workflow") root.enterWorkflow(extension)
+    else if (activation === "emoji") root.enterEmojiPicker(extension)
     else if (activation === "input") root.enterFocusedExtension(extension)
   }
 
@@ -636,6 +803,7 @@ Item {
     if (!extension || !extension.available || extension.mode !== "workflow") return
     root.invalidateExtensionQuery("entered workflow")
     root.invalidateWorkflowAction("entered workflow")
+    if (root.emojiPickerActive) root.leaveEmojiPicker(false)
     root.focusedExtension = null
     root.leaveFileBrowser(false)
     root.workflowActive = true
@@ -656,6 +824,10 @@ Item {
   }
 
   function leaveWorkflow() {
+    if (root.routedExtensionSession) {
+      root.cancel()
+      return
+    }
     root.invalidateWorkflowAction("left workflow")
     root.resetFileIndex()
     root.fileBrowserActive = false
@@ -794,8 +966,8 @@ Item {
   }
 
   function filesExtensionForCapability(capability) {
-    for (var i = 0; i < root.extensions.length; i++) {
-      var extension = root.extensions[i]
+    for (var i = 0; i < root.enabledExtensions.length; i++) {
+      var extension = root.enabledExtensions[i]
       if (extension && extension.mode === "files" && extension.capability === capability) return extension
     }
     return null
@@ -843,6 +1015,7 @@ Item {
   function enterFileBrowser(extension, startPath) {
     if (!extension || !extension.available) return
     root.invalidateExtensionQuery("entered file browser")
+    if (root.emojiPickerActive) root.leaveEmojiPicker(false)
     root.focusedExtension = null
     root.resetFileIndex()
     root.fileBrowserActive = true
@@ -857,6 +1030,10 @@ Item {
   }
 
   function leaveFileBrowser(rebuild) {
+    if (rebuild !== false && root.routedExtensionSession) {
+      root.cancel()
+      return
+    }
     root.resetFileIndex()
     root.actionPanelActive = false
     root.actionPanelFile = null
@@ -867,6 +1044,251 @@ Item {
     root.fileEntries = []
     root.filterText = ""
     if (rebuild !== false) root.rebuildDisplay()
+  }
+
+  // ------------------------------------------------------------------
+  // Emoji picker. A grid rather than the row list: emoji are recognized by
+  // their glyph, so a column of labelled rows would waste the whole card.
+  // ------------------------------------------------------------------
+
+  function emojiExtensionForCapability(capability) {
+    for (var i = 0; i < root.enabledExtensions.length; i++) {
+      var extension = root.enabledExtensions[i]
+      if (extension && extension.mode === "emoji" && extension.capability === capability) return extension
+    }
+    return null
+  }
+
+  // The favorites/usage arguments exist so the binding re-evaluates when a pin
+  // or a paste changes the layout; the stores are read through their own
+  // accessors rather than from the passed maps.
+  function emojiLayoutFor(values, groups, query, extension, columns, _starredIds, _usageRecords) {
+    if (!extension) return ({ cells: [], rows: [], sectioned: false })
+    return MenuModel.emojiSections(values, query, {
+      capability: extension.capability,
+      columns: columns,
+      groups: groups,
+      isStarred: function(itemId) { return favorites.isStarred(itemId) },
+      usageCount: function(itemId) { return usage.count(itemId) },
+      lastUsedAt: function(itemId) { return usage.lastUsedAt(itemId) }
+    })
+  }
+
+  function emojiCell(index) {
+    var cells = root.emojiLayout.cells
+    return index >= 0 && index < cells.length ? cells[index] : null
+  }
+
+  // FileView does not re-read when its path binding changes after a failed
+  // load, so advancing a candidate has to ask for the read explicitly.
+  function advanceEmojiCandidate(current, total, reader) {
+    if (current + 1 >= total) return false
+    Qt.callLater(function() { reader.reload() })
+    return true
+  }
+
+  // A file that reads but parses to nothing is as useless as a missing one, so
+  // both outcomes fall through to the next candidate.
+  function loadEmojiData(raw) {
+    var values = MenuModel.parseEmojiData(raw)
+    if (values.length === 0 && root.emojiDataCandidate + 1 < root.emojiDataPaths.length) {
+      root.emojiDataCandidate += 1
+      root.advanceEmojiCandidate(root.emojiDataCandidate - 1, root.emojiDataPaths.length, emojiDataFile)
+      return
+    }
+    root.emojiData = values
+    if (root.emojiPickerActive) root.rebuildEmojiDisplay()
+  }
+
+  function loadEmojiGroups(raw) {
+    var values = MenuModel.parseEmojiGroups(raw)
+    if (values.length === 0 && root.emojiGroupsCandidate + 1 < root.emojiGroupsPaths.length) {
+      root.emojiGroupsCandidate += 1
+      root.advanceEmojiCandidate(root.emojiGroupsCandidate - 1, root.emojiGroupsPaths.length, emojiGroupsFile)
+      return
+    }
+    root.emojiGroups = values
+    if (root.emojiPickerActive) root.rebuildEmojiDisplay()
+  }
+
+  function enterEmojiPicker(extension) {
+    if (!extension || !extension.available) return
+    root.invalidateExtensionQuery("entered emoji picker")
+    root.focusedExtension = null
+    root.leaveFileBrowser(false)
+    root.emojiPickerActive = true
+    root.emojiExtension = extension
+    root.emojiCopyFeedback = ""
+    root.filterText = ""
+    root.selectedIndex = 0
+    root.cursorActive = true
+    root.rebuildEmojiDisplay()
+  }
+
+  function leaveEmojiPicker(rebuild) {
+    if (rebuild !== false && root.routedExtensionSession) {
+      root.cancel()
+      return
+    }
+    root.emojiPickerActive = false
+    root.emojiExtension = null
+    root.emojiCopyFeedback = ""
+    root.filterText = ""
+    root.selectedIndex = 0
+    emojiRowModel.clear()
+    if (rebuild !== false) root.rebuildDisplay()
+  }
+
+  // Only the row/section skeleton goes into a ListModel; the cells stay a plain
+  // array the delegates index into, so a rebuild does not have to churn one
+  // model entry per emoji.
+  function rebuildEmojiDisplay() {
+    emojiRowModel.clear()
+    var rows = root.emojiLayout.rows
+    for (var i = 0; i < rows.length; i++) {
+      emojiRowModel.append({
+        section: rows[i].section,
+        cellStart: rows[i].start,
+        cellCount: rows[i].count
+      })
+    }
+    root.layoutSerial += 1
+    var total = root.emojiLayout.cells.length
+    if (total === 0) root.selectedIndex = 0
+    else if (root.selectedIndex >= total) root.selectedIndex = total - 1
+    else if (root.selectedIndex < 0) root.selectedIndex = 0
+    root.cursorActive = total > 0
+    Qt.callLater(function() { if (root.emojiLayout.cells.length > 0) root.revealEmojiCursor() })
+  }
+
+  function revealEmojiCursor() {
+    var cell = root.emojiCell(root.selectedIndex)
+    if (cell) emojiList.positionViewAtIndex(cell.row, ListView.Contain)
+  }
+
+  function selectEmoji(delta) {
+    var total = root.emojiLayout.cells.length
+    if (total === 0) return
+    root.disarmPointer()
+    if (!root.cursorActive) {
+      root.cursorActive = true
+      root.selectedIndex = delta < 0 ? total - 1 : 0
+    } else {
+      root.selectedIndex = (root.selectedIndex + delta + total) % total
+    }
+    root.revealEmojiCursor()
+  }
+
+  // Vertical and paging movement clamp instead of wrapping: wrapping by a
+  // whole row lands somewhere unrelated to the column the eye is following.
+  // Rows are walked through the layout rather than by adding a column count,
+  // because a section's last row can be short and headers break the stride.
+  function selectEmojiRow(delta) {
+    var rows = root.emojiLayout.rows
+    if (rows.length === 0) return
+    root.disarmPointer()
+    if (!root.cursorActive) {
+      root.cursorActive = true
+      root.selectedIndex = delta < 0 ? root.emojiLayout.cells.length - 1 : 0
+      root.revealEmojiCursor()
+      return
+    }
+    var cell = root.emojiCell(root.selectedIndex)
+    if (!cell) return
+    var target = rows[Math.max(0, Math.min(rows.length - 1, cell.row + delta))]
+    root.selectedIndex = target.start + Math.min(cell.column, target.count - 1)
+    root.revealEmojiCursor()
+  }
+
+  function selectEmojiPage(delta) {
+    var visibleGridRows = Math.max(1, Math.floor(root.visibleRowsHeight / root.emojiCellSize))
+    root.selectEmojiRow(delta * visibleGridRows)
+  }
+
+  function toggleSelectedEmojiStar() {
+    if (!root.emojiPickerActive || !favorites.loaded) return
+    var row = root.selectedEmojiRow
+    if (!row || !row.itemId) return
+    root.pendingStarSelectionId = row.itemId
+    favorites.toggle(row.itemId)
+  }
+
+  function copySelectedEmoji() {
+    if (!root.emojiPickerActive || !root.emojiExtension) return
+    var row = root.selectedEmojiRow
+    if (!row || !row.emoji) return
+    // Copying keeps the picker open so several emoji can be collected in one
+    // session; pasting closes the launcher.
+    Quickshell.execDetached(root.commandArguments(root.emojiExtension.copyCommand, { emoji: row.emoji }))
+    usage.record(row.itemId)
+    root.emojiCopyFeedback = row.emoji
+    emojiCopyFeedbackTimer.restart()
+  }
+
+  // Grid navigation reassigns Left/Right (previous/next cell) and Right no
+  // longer activates, so the emoji picker handles its own keys instead of
+  // threading exceptions through the row-list handler.
+  function handleEmojiKey(event) {
+    if (event.key === Qt.Key_Escape) {
+      if (root.filterText) root.setFilter("")
+      else root.leaveEmojiPicker()
+      return true
+    }
+    if (event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) {
+      root.copySelectedEmoji()
+      return true
+    }
+    if (event.key === Qt.Key_S && (event.modifiers & Qt.ControlModifier)) {
+      root.toggleSelectedEmojiStar()
+      return true
+    }
+    if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+      if (event.modifiers & Qt.ControlModifier) root.copySelectedEmoji()
+      else if (root.cursorActive) root.activateEmojiIndex(root.selectedIndex)
+      else if (root.emojiLayout.cells.length > 0) root.cursorActive = true
+      return true
+    }
+    if (Util.editsFilter(event, root.filterText)) {
+      root.setFilter(Util.editedFilter(event, root.filterText))
+      return true
+    }
+    // Left is a grid axis here, so only Backspace leaves an empty query — the
+    // row list can reuse Left for "go back" because it has no horizontal axis.
+    if (event.key === Qt.Key_Backspace && !root.filterText) {
+      root.leaveEmojiPicker()
+      return true
+    }
+    if (event.key === Qt.Key_Left) { root.selectEmoji(-1); return true }
+    if (event.key === Qt.Key_Right) { root.selectEmoji(1); return true }
+    if (event.key === Qt.Key_Up) { root.selectEmojiRow(-1); return true }
+    if (event.key === Qt.Key_Down) { root.selectEmojiRow(1); return true }
+    if (event.key === Qt.Key_PageUp) { root.selectEmojiPage(-1); return true }
+    if (event.key === Qt.Key_PageDown) { root.selectEmojiPage(1); return true }
+    if ((event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)
+        && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))) {
+      root.selectEmoji(event.key === Qt.Key_Backtab || (event.modifiers & Qt.ShiftModifier) ? -1 : 1)
+      return true
+    }
+    if (event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127
+        && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)) {
+      root.setFilter(root.filterText + event.text)
+      return true
+    }
+    return false
+  }
+
+  function activateEmojiIndex(index) {
+    if (!root.emojiPickerActive || !root.emojiExtension) return
+    var row = root.emojiCell(index)
+    if (!row || !row.emoji) return
+    var command = root.shellCommand(root.emojiExtension.command, { emoji: row.emoji })
+    usage.record(row.itemId)
+    // The insert helper types into whatever regains focus, so the launcher must
+    // be gone before it runs.
+    root.leaveEmojiPicker(false)
+    root.applySerial = root.requestSerial
+    root.opened = false
+    root.runAction(command)
   }
 
   function parentPath(path) {
@@ -1455,6 +1877,10 @@ Item {
       root.rebuildActionPanel()
       return
     }
+    if (root.emojiPickerActive) {
+      root.rebuildEmojiDisplay()
+      return
+    }
     if (root.fileBrowserActive) {
       root.rebuildFileDisplay()
       return
@@ -1538,8 +1964,8 @@ Item {
 
       var matchedExtensionRoots = ({})
       if (!root.focusedExtension && (active === "root" || active === "extensions")) {
-        for (var searchExtensionIndex = 0; searchExtensionIndex < root.extensions.length; searchExtensionIndex++) {
-          var searchExtension = root.extensions[searchExtensionIndex]
+        for (var searchExtensionIndex = 0; searchExtensionIndex < root.enabledExtensions.length; searchExtensionIndex++) {
+          var searchExtension = root.enabledExtensions[searchExtensionIndex]
           var searchExtensionItem = MenuModel.extensionRootItem(searchExtension)
           if (!searchExtensionItem || !MenuModel.matchesQuery(searchExtensionItem, preparedQuery, true)) continue
           var searchExtensionRow = root.displayRow(searchExtensionItem, searchExtensionItem.description,
@@ -1553,7 +1979,7 @@ Item {
         }
       }
 
-      var activeExtensionCatalog = root.focusedExtension ? [root.focusedExtension] : root.extensions
+      var activeExtensionCatalog = root.focusedExtension ? [root.focusedExtension] : root.enabledExtensions
       // A focused prefix extension has a hidden global prefix and one literal
       // prompt action. It must not rediscover its own root/suggestion rows.
       var focusedPrefix = MenuModel.focusedPrefixMatch(root.focusedExtension, query)
@@ -1669,10 +2095,19 @@ Item {
         var extensionRootRows = []
         for (var extensionRootIndex = 0; extensionRootIndex < root.extensions.length; extensionRootIndex++) {
           var listedExtension = root.extensions[extensionRootIndex]
-          var listedExtensionItem = MenuModel.extensionRootItem(listedExtension)
+          var listedDisabled = root.isCapabilityDisabled(listedExtension.capability)
+          var listedExtensionItem = MenuModel.extensionRootItem(listedExtension, listedDisabled,
+            MenuModel.capabilityLockedByConfig(listedExtension.capability, root.configuredCapabilities))
           if (!listedExtensionItem) continue
           var listedExtensionRow = root.displayRow(listedExtensionItem, listedExtensionItem.description, extensionRootIndex)
           listedExtensionRow.starred = favorites.isStarred(listedExtensionRow.itemId)
+          listedExtensionRow.disabled = listedDisabled
+          // A disabled extension belongs only to Extensions: the starting view
+          // is for things that can actually be run.
+          if (listedDisabled) {
+            if (active === "extensions") extensionRootRows.push(listedExtensionRow)
+            continue
+          }
           if (active === "extensions" || listedExtensionRow.starred) extensionRootRows.push(listedExtensionRow)
         }
         extensionRootRows = MenuModel.sortExtensionRootRows(extensionRootRows)
@@ -1693,13 +2128,13 @@ Item {
           rows.push(favoriteRow)
         }
 
-        var setupExtension = MenuModel.firstSetupExtension(root.extensions)
+        var setupExtension = MenuModel.firstSetupExtension(root.enabledExtensions)
         if (setupExtension) {
           var dependencySetup = MenuModel.dependencySetup(setupExtension)
           var setupItem = root.normalizeItem("dependency.setup." + setupExtension.id, {
             icon: setupExtension.icon,
             iconFont: setupExtension.iconFont,
-            label: "Enable Calculator & Currency",
+            label: dependencySetup.label || ("Enable " + setupExtension.label),
             description: "Install " + dependencySetup.packageName + " · Press Enter to review"
           })
           rows.push(root.displayRow(setupItem, setupItem.description, -1))
@@ -1809,6 +2244,11 @@ Item {
     root.selectedIndex = 0
     root.cursorActive = root.mode !== "input"
     root.disarmPointer()
+    if (root.emojiPickerActive) {
+      root.emojiCopyFeedback = ""
+      root.rebuildEmojiDisplay()
+      return
+    }
     if (root.fileBrowserActive) {
       // Keep the current rows visible while the debounced scan runs. Rebuilding
       // the same model here made every keystroke pay for up to 100 stale rows,
@@ -1824,6 +2264,7 @@ Item {
   function setActiveMenu(id, pushHistory, fromPointer) {
     if (!root.item(id)) id = "root"
     root.invalidateExtensionQuery("active menu changed")
+    if (root.emojiPickerActive) root.leaveEmojiPicker(false)
     root.focusedExtension = null
     if (pushHistory && id !== root.activeMenu) root.navStack = root.navStack.concat([root.activeMenu])
     root.activeMenu = id
@@ -1898,6 +2339,7 @@ Item {
       var preparedExtension = root.extensionById(row.itemId.substring("extension.prepare.".length))
       if (preparedExtension && preparedExtension.mode === "files") root.enterFileBrowser(preparedExtension)
       else if (preparedExtension && preparedExtension.mode === "workflow") root.enterWorkflow(preparedExtension)
+      else if (preparedExtension && preparedExtension.mode === "emoji") root.enterEmojiPicker(preparedExtension)
       else root.setFilter(row.action)
       Qt.callLater(function() { keyCatcher.forceActiveFocus() })
       return
@@ -2005,10 +2447,51 @@ Item {
   function requestDeleteSelected() {
     if (!root.cursorActive || root.selectedIndex < 0 || root.selectedIndex >= displayModel.count) return
     var row = displayModel.get(root.selectedIndex)
-    if (!row || row.kind !== "app") return
+    if (!row) return
+    if (root.activeMenu === "extensions" && !root.filterText) {
+      var capability = MenuModel.extensionRootCapability(row.itemId)
+      if (!capability || !capabilities.loaded) return
+      // A configured value is the user's, not the launcher's, to change.
+      if (MenuModel.capabilityLockedByConfig(capability, root.configuredCapabilities)) return
+      var listed = root.extensionByCapabilityIncludingDisabled(capability)
+      root.capabilityTarget = {
+        capability: capability,
+        label: listed ? listed.label : capability,
+        bundled: !listed || listed.bundled === true,
+        pluginId: listed && !listed.bundled ? listed.id : "",
+        disabled: root.isCapabilityDisabled(capability)
+      }
+      capabilityConfirm.selectedIndex = 1
+      root.capabilityConfirmOpen = true
+      return
+    }
+    if (row.kind !== "app") return
     root.deleteTarget = { appId: row.appId, label: row.label }
     deleteConfirm.selectedIndex = 1
     root.deleteConfirmOpen = true
+  }
+
+  function extensionByCapabilityIncludingDisabled(capability) {
+    for (var i = 0; i < root.extensions.length; i++)
+      if (root.extensions[i].capability === capability) return root.extensions[i]
+    return null
+  }
+
+  function cancelCapabilityToggle() {
+    root.capabilityConfirmOpen = false
+    root.capabilityTarget = null
+    root.disarmPointer()
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function confirmCapabilityToggle() {
+    var target = root.capabilityTarget
+    root.capabilityConfirmOpen = false
+    root.capabilityTarget = null
+    if (!target) return
+    root.pendingStarSelectionId = MenuModel.extensionRootId(target.capability)
+    capabilities.setDisabled(target.capability, !target.disabled)
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   function cancelDelete() {
@@ -2053,6 +2536,8 @@ Item {
 
     var reset = MenuModel.openStateReset()
     for (var key in reset) root[key] = reset[key]
+    root.emojiCopyFeedback = ""
+    emojiRowModel.clear()
     root.mode = "menu"
     root.requestActive = false
     root.selectionFile = ""
@@ -2068,6 +2553,8 @@ Item {
   function cancel() {
     root.invalidateWorkflowAction("launcher canceled")
     root.routePendingForMenuSources = false
+    root.pendingExtensionCapability = ""
+    root.routedExtensionSession = false
     if (root.dmenuActive) root.finishRequest(null)
     root.resetFileIndex()
     root.actionPanelActive = false
@@ -2080,6 +2567,10 @@ Item {
     root.workflowNode = null
     root.workflowContext = ({})
     root.workflowStack = []
+    root.emojiPickerActive = false
+    root.emojiExtension = null
+    root.emojiCopyFeedback = ""
+    emojiRowModel.clear()
     root.focusedExtension = null
     root.extensionQuery = ""
     root.extensionResult = ""
@@ -2114,6 +2605,7 @@ Item {
     // their icons. Keep the open-time fallback, but avoid rescanning every icon
     // directory on each rapid launcher invocation.
     root.refreshAppIconsIfStale()
+    root.enterPendingExtension()
 
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
@@ -2157,6 +2649,7 @@ Item {
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
   ListModel { id: displayModel }
+  ListModel { id: emojiRowModel }
 
   // ----------------------------------------------------------- route surface
   //
@@ -2204,6 +2697,13 @@ Item {
     if (!pointerGate.moved(item, mouse)) return
     root.cursorActive = true
     root.selectedIndex = index
+  }
+
+  Timer {
+    id: emojiCopyFeedbackTimer
+    interval: 1600
+    repeat: false
+    onTriggered: root.emojiCopyFeedback = ""
   }
 
   Timer {
@@ -2329,7 +2829,7 @@ Item {
     onTriggered: {
       var revision = root.extensionQuerySerial
       var query = root.effectiveExtensionQuery()
-      var queryCatalog = root.focusedExtension ? [root.focusedExtension] : root.extensions
+      var queryCatalog = root.focusedExtension ? [root.focusedExtension] : root.enabledExtensions
       var extension = MenuModel.queryExtension(queryCatalog, query)
       if (!extension || revision !== root.extensionQuerySerial) return
       root.resultExtension = extension
@@ -2427,9 +2927,12 @@ Item {
         var workflowId = root.workflowExtension ? root.workflowExtension.id : ""
         var fileCapability = root.fileBrowserExtension ? root.fileBrowserExtension.capability : ""
         var fileId = root.fileBrowserExtension ? root.fileBrowserExtension.id : ""
+        var emojiCapability = root.emojiExtension ? root.emojiExtension.capability : ""
+        var emojiId = root.emojiExtension ? root.emojiExtension.id : ""
         var oldWorkflowNode = root.workflowNode
         var oldWorkflowStack = root.workflowStack
         root.extensions = catalog.extensions
+        root.configuredCapabilities = catalog.configuredCapabilities || ({})
 
         if (focusedCapability) {
           var refreshedFocus = root.extensionByCapability(focusedCapability) || root.extensionById(focusedId)
@@ -2452,6 +2955,12 @@ Item {
           else if (root.directoryPickerActive && root.workflowActive) root.workflowBack()
           else root.leaveFileBrowser(false)
         }
+        if (root.emojiPickerActive) {
+          var refreshedEmoji = root.emojiExtensionForCapability(emojiCapability) || root.extensionById(emojiId)
+          if (refreshedEmoji && refreshedEmoji.available && refreshedEmoji.mode === "emoji") root.emojiExtension = refreshedEmoji
+          else root.leaveEmojiPicker(false)
+        }
+        root.enterPendingExtension()
         if (catalog.complete) root.extensionsLoadedAt = Date.now()
       } else {
         catalog.diagnostics.unshift("Retained the last known-good extension catalog after a transient loader failure")
@@ -2580,6 +3089,24 @@ Item {
   }
 
   Connections {
+    target: capabilities
+    function onChanged() {
+      if (!root.opened || root.dmenuActive) return
+      var selectedId = root.pendingStarSelectionId
+      root.pendingStarSelectionId = ""
+      root.rebuildDisplay()
+      if (!selectedId) return
+      for (var i = 0; i < displayModel.count; i++) {
+        if (displayModel.get(i).itemId !== selectedId) continue
+        root.selectedIndex = i
+        root.cursorActive = true
+        root.revealCursor()
+        break
+      }
+    }
+  }
+
+  Connections {
     target: favorites
     function onChanged() {
       if (!root.opened || root.dmenuActive) return
@@ -2587,6 +3114,19 @@ Item {
       root.pendingStarSelectionId = ""
       root.rebuildDisplay()
       if (!selectedId) return
+      // Pinning re-ranks its surface, so follow the item that was starred
+      // rather than leaving the cursor on whatever took its place.
+      if (root.emojiPickerActive) {
+        var cells = root.emojiLayout.cells
+        for (var cell = 0; cell < cells.length; cell++) {
+          if (cells[cell].itemId !== selectedId) continue
+          root.selectedIndex = cell
+          root.cursorActive = true
+          root.revealEmojiCursor()
+          break
+        }
+        return
+      }
       for (var i = 0; i < displayModel.count; i++) {
         if (displayModel.get(i).itemId !== selectedId) continue
         root.selectedIndex = i
@@ -2682,6 +3222,25 @@ Item {
       root.finishDefaultMenuReload()
     }
     onFileChanged: root.requestDefaultMenuReload()
+  }
+
+  // The emoji dataset is static and read-only. It loads once the catalog
+  // resolves an emoji provider, so opening the picker never waits on IO.
+  FileView {
+    id: emojiDataFile
+    path: root.emojiDataPath
+    printErrors: false
+    onLoaded: root.loadEmojiData(text())
+    onLoadFailed: root.loadEmojiData("")
+  }
+
+  // Category boundaries. Without them the grid still works, just ungrouped.
+  FileView {
+    id: emojiGroupsFile
+    path: root.emojiGroupsPath
+    printErrors: false
+    onLoaded: root.loadEmojiGroups(text())
+    onLoadFailed: root.loadEmojiGroups("")
   }
 
   FileView {
@@ -2829,7 +3388,7 @@ Item {
       Item {
         id: keyCatcher
         anchors.fill: parent
-        z: (root.deleteConfirmOpen || root.dependencyConfirmOpen) ? 20 : 0
+        z: (root.deleteConfirmOpen || root.dependencyConfirmOpen || root.capabilityConfirmOpen) ? 20 : 0
         focus: true
 
         Keys.priority: Keys.BeforeItem
@@ -2840,6 +3399,15 @@ Item {
           }
           if (root.dependencyConfirmOpen) {
             if (dependencyConfirm.handleKey(event)) event.accepted = true
+            return
+          }
+          if (root.capabilityConfirmOpen) {
+            if (capabilityConfirm.handleKey(event)) event.accepted = true
+            return
+          }
+
+          if (root.emojiPickerActive) {
+            if (root.handleEmojiKey(event)) event.accepted = true
             return
           }
 
@@ -2935,6 +3503,35 @@ Item {
         }
 
         ConfirmDialog {
+          id: capabilityConfirm
+
+          anchors.fill: parent
+          opened: root.capabilityConfirmOpen
+          z: 12
+          message: root.capabilityTarget
+            ? (root.capabilityTarget.disabled
+              ? ("Enable " + root.capabilityTarget.label + " again?")
+              : ("Disable " + root.capabilityTarget.label + "?\n\n"
+                + "It will leave Extensions, global search, and its prefix. Select it here and press Delete to switch it back on."
+                + (root.capabilityTarget.bundled
+                  ? ""
+                  : "\n\nThe plugin stays installed. Remove it entirely with:\nomarchy plugin remove "
+                    + root.capabilityTarget.pluginId)))
+            : ""
+          cancelText: "Cancel"
+          confirmText: root.capabilityTarget && root.capabilityTarget.disabled ? "Enable" : "Disable"
+          background: root.background
+          foreground: root.foreground
+          scrim: root.scrim
+          selectedBackground: root.selectedBackground
+          selectedText: root.selectedText
+          fontFamily: root.fontFamily
+          cornerRadius: root.cornerRadius
+          onCanceled: root.cancelCapabilityToggle()
+          onConfirmed: root.confirmCapabilityToggle()
+        }
+
+        ConfirmDialog {
           id: dependencyConfirm
 
           anchors.fill: parent
@@ -2978,8 +3575,11 @@ Item {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
+            anchors.rightMargin: root.emojiPickerActive && emojiCaptionText.text ? emojiCaptionText.width + Style.space(12) : 0
             text: root.actionPanelActive
               ? ("Actions for " + ((root.actionPanelFile && root.actionPanelFile.name) || "file"))
+              : root.emojiPickerActive
+                ? (root.filterText || "Search emoji…")
               : root.fileBrowserActive
                 ? (root.fileBrowserPath + (root.filterText ? "  ›  " + root.filterText : ""))
               : root.workflowActive
@@ -2991,6 +3591,24 @@ Item {
             opacity: root.filterText ? 1 : 0.58
             font.family: root.fontFamily
             font.pixelSize: Style.font.heading
+            elide: Text.ElideRight
+          }
+
+          Text {
+            id: emojiCaptionText
+            visible: root.emojiPickerActive && text.length > 0
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            width: Math.min(implicitWidth, parent.width * 0.5)
+            horizontalAlignment: Text.AlignRight
+            textFormat: Text.PlainText
+            text: root.emojiCopyFeedback
+              ? "Copied " + root.emojiCopyFeedback
+              : ((root.selectedEmojiRow && root.selectedEmojiRow.caption) || "")
+            color: root.foreground
+            opacity: 0.52
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
             elide: Text.ElideRight
           }
 
@@ -3014,7 +3632,135 @@ Item {
           height: root.visibleRowsHeight
 
           ListView {
+            id: emojiList
+            visible: root.emojiPickerActive
+            anchors.fill: parent
+            model: emojiRowModel
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            onWidthChanged: root.emojiListWidth = width
+
+            // Category headers. A ranked search has no categories, so those
+            // rows carry an empty section and collapse the delegate away.
+            section.property: "section"
+            section.criteria: ViewSection.FullString
+            section.delegate: Item {
+              id: emojiSection
+              required property string section
+
+              width: ListView.view.width
+              height: emojiSection.section.length > 0 ? root.emojiSectionHeight : 0
+              visible: emojiSection.section.length > 0
+
+              Text {
+                textFormat: Text.PlainText
+                text: emojiSection.section
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(4)
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: Style.space(4)
+                color: root.foreground
+                opacity: 0.5
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.weight: Font.Medium
+                elide: Text.ElideRight
+              }
+            }
+
+            delegate: Item {
+              id: emojiRow
+              required property string section
+              required property int cellStart
+              required property int cellCount
+
+              width: ListView.view.width
+              height: root.emojiCellSize
+
+              Row {
+                anchors.left: parent.left
+                spacing: 0
+
+                Repeater {
+                  model: emojiRow.cellCount
+
+                  delegate: BorderSurface {
+                    id: emojiCellItem
+                    required property int index
+
+                    readonly property int cellIndex: emojiRow.cellStart + emojiCellItem.index
+                    readonly property var cell: root.emojiCell(emojiCellItem.cellIndex)
+                    readonly property bool hasCursor: root.cursorActive && emojiCellItem.cellIndex === root.selectedIndex
+
+                    width: root.emojiCellSize
+                    height: root.emojiCellSize
+                    radius: root.cornerRadius
+                    color: emojiCellItem.hasCursor ? root.selectedBackground : "transparent"
+                    borderSpec: emojiCellItem.hasCursor ? root.selectedBorderSpec : Border.none()
+
+                    Text {
+                      textFormat: Text.PlainText
+                      text: emojiCellItem.cell ? emojiCellItem.cell.emoji : ""
+                      anchors.centerIn: parent
+                      horizontalAlignment: Text.AlignHCenter
+                      verticalAlignment: Text.AlignVCenter
+                      font.family: root.fontFamily
+                      font.pixelSize: Math.round(root.emojiCellSize * 0.52)
+                    }
+
+                    Text {
+                      text: "★"
+                      visible: !!emojiCellItem.cell && emojiCellItem.cell.starred
+                      anchors.top: parent.top
+                      anchors.right: parent.right
+                      anchors.topMargin: Style.space(3)
+                      anchors.rightMargin: Style.space(3)
+                      color: emojiCellItem.hasCursor ? root.selectedText : root.foreground
+                      opacity: 0.7
+                      font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    MouseArea {
+                      id: emojiCellMouseArea
+                      anchors.fill: parent
+                      hoverEnabled: true
+                      cursorShape: Qt.PointingHandCursor
+                      onEntered: root.selectFromPointer(emojiCellItem.cellIndex, emojiCellItem, {
+                        x: emojiCellMouseArea.mouseX,
+                        y: emojiCellMouseArea.mouseY
+                      })
+                      onPositionChanged: function(mouse) {
+                        root.selectFromPointer(emojiCellItem.cellIndex, emojiCellItem, mouse)
+                      }
+                      onClicked: {
+                        root.cursorActive = true
+                        root.selectedIndex = emojiCellItem.cellIndex
+                        root.activateEmojiIndex(emojiCellItem.cellIndex)
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          Text {
+            visible: root.emojiPickerActive && root.emojiLayout.cells.length === 0
+            anchors.centerIn: parent
+            textFormat: Text.PlainText
+            text: root.emojiData.length === 0
+              ? "No emoji dataset found"
+              : "No emoji match “" + root.filterText + "”"
+            color: root.foreground
+            opacity: 0.7
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+          ListView {
             id: resultList
+            visible: !root.emojiPickerActive
             anchors.fill: parent
             anchors.rightMargin: root.imagePreviewActive ? root.previewPaneWidth + root.contentSpacing : 0
             model: displayModel
@@ -3058,6 +3804,7 @@ Item {
               required property string action
               required property int childCount
               required property bool starred
+              required property bool disabled
 
               readonly property bool hasCursor: root.cursorActive && row.index === root.selectedIndex
               readonly property bool isApp: row.kind === "app"
@@ -3065,7 +3812,7 @@ Item {
               readonly property bool hasIcon: row.icon.length > 0 || row.isApp || row.isImageFile
 
               width: ListView.view.width
-              height: root.rowHeightForDetail(row.detail)
+              height: root.rowHeightForDetail(row.detail, row.disabled)
               radius: root.cornerRadius
               color: row.hasCursor ? root.selectedBackground : "transparent"
               borderSpec: row.hasCursor ? root.selectedBorderSpec : Border.none()
@@ -3150,6 +3897,9 @@ Item {
                   width: parent.width
                   text: row.label
                   color: row.hasCursor ? root.selectedText : root.foreground
+                  // A switched-off extension has to read as switched off
+                  // without being selected or searched for.
+                  opacity: row.disabled ? 0.55 : 1
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.heading
                   font.weight: Font.Medium
@@ -3159,7 +3909,7 @@ Item {
                 Text {
                   width: parent.width
                   text: row.detail
-                  visible: (root.filterText || row.kind === "dmenu" || row.itemId === "extension.result.pending") && row.detail.length > 0
+                  visible: (root.filterText || row.disabled || row.kind === "dmenu" || row.itemId === "extension.result.pending") && row.detail.length > 0
                   color: root.foreground
                   opacity: 0.52
                   font.family: root.fontFamily
@@ -3341,11 +4091,14 @@ Item {
             color: Util.alpha(root.foreground, 0.035)
           }
 
+          // Two nested spacings, not one: the divider gap is owned by the outer
+          // Row and the per-hint Row equally, so a divider sits centred between
+          // its neighbours. A label and its key cap keep their own tighter gap.
           Row {
             anchors.right: parent.right
             anchors.rightMargin: card.contentRightInset
             anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(18)
+            spacing: root.actionBarDividerGap
 
             Repeater {
               model: root.displayedActionBarHints
@@ -3353,7 +4106,7 @@ Item {
               Row {
                 required property int index
                 required property var modelData
-                spacing: Style.space(5)
+                spacing: root.actionBarDividerGap
                 anchors.verticalCenter: parent.verticalCenter
 
                 Rectangle {
@@ -3363,6 +4116,10 @@ Item {
                   color: Util.alpha(root.foreground, 0.14)
                   anchors.verticalCenter: parent.verticalCenter
                 }
+
+                Row {
+                  spacing: Style.space(5)
+                  anchors.verticalCenter: parent.verticalCenter
 
                 Text {
                   text: modelData.label
@@ -3405,6 +4162,7 @@ Item {
                       }
                     }
                   }
+                }
                 }
               }
             }
