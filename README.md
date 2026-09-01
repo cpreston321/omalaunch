@@ -45,6 +45,7 @@ This workaround can be removed once Omarchy supports setting a widget’s sectio
 - Browse, recursively search, open, copy paths, and star local files and directories
 - Look up current times and convert times across DST-aware timezones
 - Search a grid of emoji and paste one straight into the focused application
+- Browse, search, and paste clipboard history with a detail pane
 - Accept dmenu-style select and input requests
 - Load extensions contributed by enabled Omarchy plugins
 - Launch agent prompts such as Pi and Codex through optional extensions
@@ -134,6 +135,12 @@ o.bind("CTRL + ALT + SPACE", "Emoji", "omarchy-shell shell summon quantumfire.om
 
 Any extension capability works the same way — `files`, `calculator`, and so on.
 
+## Clipboard history
+
+Type `clip` and activate **Clipboard History** to browse everything Omarchy's clipboard capture has recorded. The list shows an icon and a one-line title; the pane beside it shows the entry in full along with its type, size, and origin. Press Enter to paste it into the focused application, or Ctrl+C to copy it without pasting. Searching is a plain substring match, so a half-remembered fragment finds what you want.
+
+Omalaunch reads the history and never writes it — Omarchy's capture owns that file — and the file is watched, so anything you copy elsewhere appears without reopening the launcher. Text entries are pasted by their index in the history rather than by value, so clipboard contents never appear on a command line where a process listing could expose them.
+
 ## Requirements
 
 - A current Omarchy installation with the manifest-based shell plugin system
@@ -201,6 +208,14 @@ Omalaunch reads the stock Omarchy menu and the standard user menu override:
 ```
 
 Favorites and usage data are stored in the user's state directory. Currency refreshes use `qalc` and respect a persistent cooldown to avoid unnecessary network requests.
+
+The launcher keeps one size, so it never resizes as results appear or the detail pane opens. Change it in `~/.config/omarchy/omalaunch/config.jsonc`:
+
+```jsonc
+{ "version": 1, "launcher": { "width": 660, "height": 460 } }
+```
+
+Width accepts 320-2000 and height 240-1600. It takes effect the next time you open the launcher.
 
 Omalaunch core settings live in the dedicated `~/.config/omarchy/omalaunch/config.jsonc` file. Select a preferred extension provider by capability, or turn a capability off:
 

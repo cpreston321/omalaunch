@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "omalaunch.clipboard",
+  "capability": "clipboard",
+  "mode": "clipboard",
+  "label": "Clipboard History",
+  "prefixes": ["clip"],
+  "icon": "",
+  "description": "Press Enter to paste",
+  "rootDescription": "Search and paste clipboard history",
+  "priority": 10,
+  "requires": ["omarchy-clipboard-paste-text", "omarchy-clipboard-paste-file"],
+  "history": ["{stateHome}/omarchy/clipboard-history.json"],
+  "command": ["omarchy-clipboard-paste-text", "--shift-insert", "--history-index", "{index}"],
+  "copyCommand": ["omarchy-clipboard-paste-text", "--copy-only", "--history-index", "{index}"],
+  "fileCommand": ["omarchy-clipboard-paste-file", "{mime}", "{path}"],
+  "fileCopyCommand": ["omarchy-clipboard-paste-file", "--copy-only", "{mime}", "{path}"]
+}

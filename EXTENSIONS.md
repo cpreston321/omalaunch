@@ -252,6 +252,51 @@ it closes the launcher instead of revealing a starting view the keybinding
 never asked for. Reached from the launcher, leaving returns there as usual.
 The same applies to the file browser and to workflows.
 
+## Clipboard history extension
+
+Clipboard history extensions browse and paste what Omarchy's clipboard capture
+has recorded:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "example.clipboard",
+  "capability": "clipboard",
+  "mode": "clipboard",
+  "label": "Clipboard History",
+  "prefixes": ["clip"],
+  "requires": ["omarchy-clipboard-paste-text", "omarchy-clipboard-paste-file"],
+  "history": ["{stateHome}/omarchy/clipboard-history.json"],
+  "command": ["omarchy-clipboard-paste-text", "--shift-insert", "--history-index", "{index}"],
+  "copyCommand": ["omarchy-clipboard-paste-text", "--copy-only", "--history-index", "{index}"],
+  "fileCommand": ["omarchy-clipboard-paste-file", "{mime}", "{path}"],
+  "fileCopyCommand": ["omarchy-clipboard-paste-file", "--copy-only", "{mime}", "{path}"]
+}
+```
+
+`history` is an ordered candidate list resolved like the emoji `data` field,
+with `{stateHome}` added for the XDG state directory. Omalaunch reads that file
+and never writes it: Omarchy's capture owns it. The file is watched, so a copy
+made anywhere shows up without reopening the launcher.
+
+`command` and `copyCommand` support `{index}` — the entry's index in the history
+file. `fileCommand` and `fileCopyCommand` support `{path}` and `{mime}`.
+
+**Text is passed by index, never as an argument.** Omarchy's helper reads the
+entry back from the file itself. Putting clipboard text on a command line would
+expose it in a process listing, and clipboard history holds passwords.
+
+Only a prefix of each entry is scanned or rendered — 8192 characters. A single
+large paste otherwise costs hundreds of megabytes of string work on every
+keystroke and stalls the shell. Pasting is unaffected, because the helper reads
+the entry in full.
+
+Rows carry an icon and a one-line title; everything else about the selected
+entry — the content itself, then its type, size, and origin — goes in the
+detail pane beside the list. Enter pastes and closes; Ctrl+C copies without
+pasting. Searching is a plain case-insensitive substring, since a remembered
+fragment is how a clipboard gets searched.
+
 ## Workflow extension
 
 Workflow extensions contribute a launcher entry and a bounded tree of host-rendered stages. They can compose menus, text input, and Omalaunch's host-provided directory picker without shipping QML or implementing filesystem navigation:
@@ -425,6 +470,21 @@ recorded alongside `enabled: false` is kept, so switching the capability back
 on restores the selection rather than losing it, and it is not reported as a
 misconfiguration while the capability is off. Removing the key, or setting it
 to true, restores the capability on the next launcher open.
+
+The launcher keeps one size so it never resizes as results come and go or as
+the detail pane opens. Both numbers are settable, in points:
+
+```jsonc
+{
+  "version": 1,
+  "launcher": { "width": 660, "height": 460 },
+}
+```
+
+`width` accepts 320-2000 and `height` 240-1600; anything outside that, or a
+non-integer, is ignored with a diagnostic and the default is kept. dmenu
+requests keep their own dynamic sizing, because the caller states a width and a
+three-option prompt should not be a full-height panel.
 
 Host-supported capability settings are independent of the selected provider and use one file per capability. Omalaunch does not load arbitrary configuration files for external capabilities. The first supported file is `~/.config/omarchy/omalaunch/extensions/files.jsonc`:
 
