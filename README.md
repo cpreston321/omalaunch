@@ -47,7 +47,8 @@ This workaround can be removed once Omarchy supports setting a widget’s sectio
 - Search a grid of emoji and paste one straight into the focused application
 - Browse, search, and paste clipboard history with a detail pane
 - Accept dmenu-style select and input requests
-- Load extensions contributed by enabled Omarchy plugins
+- Load extensions contributed by enabled Omarchy plugins, or dropped into
+  `~/.config/omarchy/omalaunch/extensions.d/` without a plugin around them
 - Launch agent prompts such as Pi and Codex through optional extensions
 
 ## Starred favorites
@@ -176,6 +177,12 @@ emoji
 Calculation results appear first and are copied to the clipboard when activated.
 
 ### Extensions
+
+Write your own by dropping a definition into
+`~/.config/omarchy/omalaunch/extensions.d/`; no plugin is required, and an
+executable named `provider` in the same directory can generate entries
+instead. An `action` extension runs its command straight from the launcher.
+See [EXTENSIONS.md](EXTENSIONS.md).
 
 Open the fixed top-level **Extensions** directory to find every active bundled and external extension, including Calculator, Currency conversion, Emoji, Files, Timezone, and installed workflow integrations such as Codex. Star an extension with Ctrl+S to add the same shortcut to the starting view; it remains in **Extensions**, where starred shortcuts sort first and all others sort alphabetically. The directory itself cannot be starred. Global search finds extension shortcuts whether or not they are starred.
 
