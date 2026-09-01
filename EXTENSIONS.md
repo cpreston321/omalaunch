@@ -182,6 +182,36 @@ The loader is a Python 3 program. Python is part of the current standard Omarchy
 
 Omarchy plugins are trusted local software. A provider and every extension command it emits run as the current user with the launcher's environment and can access that user's files and services. Argument-array execution prevents accidental shell-string injection but is **not** a sandbox or a defense against a malicious plugin. Only install and enable plugins you trust. Providers should keep generation deterministic, fast, read-only, and free of network access where possible; secrets must not be written into generated definitions or diagnostics.
 
+## Action extension
+
+Action extensions run a command when activated. Nothing opens first — no
+prompt, no picker:
+
+```json
+{
+  "schemaVersion": 1,
+  "id": "example.camera",
+  "capability": "example.camera",
+  "mode": "action",
+  "label": "Front Driveway",
+  "description": "Open in mpv",
+  "requires": ["mpv"],
+  "command": ["mpv", "rtsp://camera.local/stream"]
+}
+```
+
+This is the mode for an entry that simply does one thing. A prefix extension
+completes its prefix and waits for a prompt, which is wrong for a command that
+takes no argument, and every other mode opens a picker first.
+
+`prefixes` is optional here, unlike every other mode that accepts them: an
+action is found by its label, so a prefix is a convenience rather than the
+mechanism. `{extensionDir}` is substituted in the command.
+
+The command is dispatched detached and the launcher closes immediately. An
+entry that opens a player or a window has nothing further to say, and waiting
+would strand the launcher on screen for as long as the thing it launched lives.
+
 ## Prefix extension
 
 Prefix extensions turn a prefix and prompt into an action:

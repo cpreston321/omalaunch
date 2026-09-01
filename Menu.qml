@@ -848,7 +848,20 @@ Item {
     else if (activation === "workflow") root.enterWorkflow(extension)
     else if (activation === "emoji") root.enterEmojiPicker(extension)
     else if (activation === "clipboard") root.enterClipboardPicker(extension)
+    else if (activation === "action") root.runExtensionAction(extension)
     else if (activation === "input") root.enterFocusedExtension(extension)
+  }
+
+  // Dispatched detached and closed immediately, the way the workflow terminal
+  // path already does: an entry that opens a player or a window has nothing
+  // more to say, and holding the launcher open until that process exits would
+  // leave it stranded on screen for as long as the thing it launched lives.
+  function runExtensionAction(extension) {
+    if (!extension || !extension.available || extension.mode !== "action") return
+    var command = root.commandArguments(extension.command, { extensionDir: extension.sourceDir })
+    if (command.length === 0) return
+    Quickshell.execDetached(command)
+    root.cancel()
   }
 
   function workflowValues(extra) {

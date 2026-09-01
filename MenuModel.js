@@ -823,6 +823,10 @@ function extensionRouteCapability(value) {
 
 function extensionRootActivation(extension) {
   if (!extension || !extension.available) return ""
+  // An action runs on Enter. Every other mode opens something first — which is
+  // why a launcher entry that just does one thing had no mode to be: prefix
+  // completes its prefix and waits for a prompt that the command never wanted.
+  if (extension.mode === "action") return "action"
   if (extension.mode === "files") return "files"
   if (extension.mode === "workflow") return "workflow"
   if (extension.mode === "emoji") return "emoji"
@@ -883,7 +887,7 @@ function normalizeExtension(raw) {
   var label = String(raw.label || "").trim()
   var mode = String(raw.mode || "prefix")
   var command = stringArray(raw.command)
-  if (!id || !label || ["prefix", "query", "files", "workflow", "emoji", "clipboard"].indexOf(mode) < 0) return null
+  if (!id || !label || ["action", "prefix", "query", "files", "workflow", "emoji", "clipboard"].indexOf(mode) < 0) return null
   if (mode !== "workflow" && command.length === 0) return null
 
   var priority = finiteExtensionNumber(raw.priority, 0)
@@ -896,8 +900,10 @@ function normalizeExtension(raw) {
     label: label,
     icon: String(raw.icon || ""),
     iconFont: String(raw.iconFont || ""),
-    description: String(raw.description || (mode === "prefix" ? "Start new session" : "Press Enter to copy")),
-    rootDescription: String(raw.rootDescription || raw.description || (mode === "prefix" ? "Start new session" : "Open extension")),
+    description: String(raw.description || (mode === "prefix" ? "Start new session"
+      : (mode === "action" ? "Press Enter to run" : "Press Enter to copy"))),
+    rootDescription: String(raw.rootDescription || raw.description || (mode === "prefix" ? "Start new session"
+      : (mode === "action" ? "Press Enter to run" : "Open extension"))),
     command: command,
     priority: priority,
     bundled: raw._bundled === true,
@@ -908,14 +914,14 @@ function normalizeExtension(raw) {
     missingRequires: stringArray(raw._missingRequires)
   }
 
-  if (mode === "prefix" || mode === "files" || mode === "workflow" || mode === "emoji" || mode === "clipboard") {
+  if (mode === "action" || mode === "prefix" || mode === "files" || mode === "workflow" || mode === "emoji" || mode === "clipboard") {
     var sourcePrefixes = Array.isArray(raw.prefixes) ? raw.prefixes : [raw.prefix]
     extension.prefixes = []
     for (var i = 0; i < sourcePrefixes.length; i++) {
       var prefix = String(sourcePrefixes[i] || "").toLowerCase().trim()
       if (prefix && extension.prefixes.indexOf(prefix) < 0) extension.prefixes.push(prefix)
     }
-    if (extension.prefixes.length === 0) return null
+    if (extension.prefixes.length === 0 && mode !== "action") return null
     if (mode === "workflow") {
       extension.workflow = normalizeWorkflow(raw.workflow)
       if (!extension.workflow) return null

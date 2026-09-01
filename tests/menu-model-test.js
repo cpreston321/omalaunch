@@ -1316,3 +1316,31 @@ const legacyBundled = menu.normalizeExtension({
 })
 assert(legacyBundled.origin === 'bundled' && menu.extensionOriginRank(legacyBundled) === 0,
   'a definition carrying only the bundled flag is ranked as bundled')
+
+// --- action mode -----------------------------------------------------------
+//
+// A launcher entry that just runs something had no mode to be: prefix
+// completes its prefix and waits for a prompt the command never wanted, and
+// every other mode opens a picker first.
+const action = menu.normalizeExtension({
+  schemaVersion: 1, id: 'cam.front', label: 'Front Driveway', mode: 'action',
+  command: ['mpv', '{extensionDir}/x'], prefixes: ['cam front driveway'],
+})
+assert(action !== null && action.mode === 'action', 'an action extension normalizes')
+assert(menu.extensionRootActivation(action) === 'action',
+  'an action activates by running rather than opening an input')
+
+const bare = menu.normalizeExtension({
+  schemaVersion: 1, id: 'bare', label: 'Bare', mode: 'action', command: ['true'],
+})
+assert(bare !== null, 'an action needs no prefix: its label is how it is found')
+assert(bare.description === 'Press Enter to run',
+  'an action says what Enter does rather than borrowing another mode\'s wording')
+
+assert(menu.normalizeExtension({
+  schemaVersion: 1, id: 'x', label: 'X', mode: 'action', command: [],
+}) === null, 'an action without a command is rejected')
+
+assert(menu.normalizeExtension({
+  schemaVersion: 1, id: 'y', label: 'Y', mode: 'prefix', command: ['true'],
+}) === null, 'a prefix extension still requires a prefix')
