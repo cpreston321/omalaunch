@@ -310,6 +310,20 @@ Live-query extensions recognize input, run asynchronously, and display the comma
 }
 ```
 
+`normalizeUnits` opts a provider into unit rewriting before its command runs.
+qalc reads an abbreviated plural as the singular times seconds — `lbs` is
+`lb·s`, `kms` is `km·s` — and a bare temperature letter as a physics constant:
+`c` the speed of light, `f` femto, `k` kilo. So `180 lbs to kg` answered
+`81.65 kg·s` and `100 c to f` answered `2.99e25 fm/s`. With the flag set, those
+spellings are rewritten to the ones qalc evaluates, and the rewritten query is
+what the result row displays, so the row says what was actually evaluated.
+
+SI-prefixed seconds (`ms`, `ns`, `ps`, `us`, `fs`) are deliberately never
+rewritten, and a bare `c`, `f`, or `k` is only read as a temperature when both
+sides of the conversion are temperatures — so `500 ms to s` and `3 c to m` are
+left alone. The flag defaults to false, so a third-party query provider is
+never rewritten.
+
 Match rules are case-insensitive regular expressions:
 
 - Every expression in `all` must match.

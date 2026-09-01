@@ -59,7 +59,19 @@ Star frequently used applications, commands, files, directories, and extension s
 
 Evaluate arithmetic, units, and currency conversions without leaving the launcher. The result row reads as a ledger line: the expression on the left, the answer right-aligned and larger in the theme's accent colour. Press Enter to copy it.
 
-Currency answers are shown the way money is written — amount first, two decimals, grouped thousands — so `10 usd to cad` gives `13.89 CAD` rather than `CAD 13.89019350`. What is shown is what gets copied. Unit answers keep their own shape, and an answer small enough that two decimals would round it to zero keeps its own precision instead.
+Currency answers are shown the way money is written — amount first, two decimals, grouped thousands — so `10 usd to cad` gives `13.89 CAD` rather than `CAD 13.89019350`. Unit answers are tidied the same way: `180 lbs to kg` gives `81.65 kg` rather than `81.6466266 kg`. A value below one keeps four significant digits instead, so `1.5 L to gal` gives `0.3963 gal` rather than being flattened to `0.4`. What is shown is what gets copied.
+
+Everyday spellings work, not just the ones `qalc` accepts. `qalc` reads an abbreviated plural as the singular times seconds and a bare temperature letter as a physics constant, so `180 lbs to kg` used to answer `81.65 kg·s` and `100 c to f` used to answer `2.99e25 fm/s`. Those are rewritten before evaluation, and the expression shown is the rewritten one, so you can see what was actually computed:
+
+| you type | evaluated as | answer |
+| --- | --- | --- |
+| `100 c to f` | `100 °C to °F` | `212 °F` |
+| `300 k to c` | `300 K to °C` | `26.85 °C` |
+| `180 lbs to kg` | `180 lb to kg` | `81.65 kg` |
+| `60 kmh to mph` | `60 km/h to mph` | `37.28 mph` |
+| `3 tsps to ml` | `3 tsp to ml` | `15 mL` |
+
+`ms`, `ns`, and `ps` are left alone, being real units, and a bare `c`, `f`, or `k` is only read as a temperature when both sides of the conversion are — so `500 ms to s` and `3 c to m` mean what they say.
 
 ![Calculator result in Omalaunch](assets/calculator.png)
 

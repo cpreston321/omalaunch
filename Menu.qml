@@ -122,6 +122,9 @@ Item {
   property var providerQueue: []
   property int providerRevision: 0
   property string extensionQuery: ""
+  // The query as qalc received it, after unit aliases were resolved. Shown as
+  // the expression, so the row says what was actually evaluated.
+  property string extensionExpression: ""
   property string extensionResult: ""
   property var resultExtension: null
   // A root shortcut can focus one extension's input without creating a second
@@ -618,6 +621,7 @@ Item {
     extensionQueryProc.generation = root.extensionQueryGeneration
     extensionQueryProc.revision = request.revision
     extensionQueryProc.query = request.query
+    extensionQueryProc.normalizedQuery = request.normalizedQuery
     extensionQueryProc.extensionId = request.extensionId
     extensionQueryProc.collected = ""
     extensionQueryProc.outputOverflow = false
@@ -628,11 +632,15 @@ Item {
   }
 
   function queueExtensionQuery(extension, query, revision) {
+    var dispatched = extension.normalizeUnits ? MenuModel.normalizeCalculationQuery(query) : query
     root.pendingExtensionQuery = {
       extensionId: extension.id,
+      // The raw query, because the staleness check compares against
+      // effectiveExtensionQuery(); only the command sees the rewrite.
       query: query,
+      normalizedQuery: dispatched,
       revision: revision,
-      command: root.commandArguments(extension.command, { query: query, extensionDir: extension.sourceDir })
+      command: root.commandArguments(extension.command, { query: dispatched, extensionDir: extension.sourceDir })
     }
     if (extensionQueryProc.running && !extensionQueryProc.stopping)
       root.stopExtensionQuery("newer query queued")
@@ -655,6 +663,7 @@ Item {
   function scheduleExtensionQuery() {
     root.invalidateExtensionQuery("query context changed")
     root.extensionQuery = ""
+    root.extensionExpression = ""
     root.extensionResult = ""
     root.resultExtension = null
     root.unavailableResultExtension = null
@@ -758,6 +767,7 @@ Item {
     root.invalidateExtensionQuery("left focused extension")
     root.focusedExtension = null
     root.extensionQuery = ""
+    root.extensionExpression = ""
     root.extensionResult = ""
     root.resultExtension = null
     root.unavailableResultExtension = null
@@ -2062,7 +2072,7 @@ Item {
         var resultItem = root.normalizeItem("extension.result", {
           icon: root.resultExtension.icon,
           iconFont: root.resultExtension.iconFont,
-          label: MenuModel.calculationExpression(root.extensionQuery || query, resultCurrency),
+          label: MenuModel.calculationExpression(root.extensionExpression || root.extensionQuery || query, resultCurrency),
           description: root.resultExtension.description,
           // What is shown is what is copied.
           action: root.shellCommand(root.resultExtension.resultCommand, { result: resultValue, query: query })
@@ -2579,6 +2589,7 @@ Item {
     emojiRowModel.clear()
     root.focusedExtension = null
     root.extensionQuery = ""
+    root.extensionExpression = ""
     root.extensionResult = ""
     root.resultExtension = null
     root.unavailableResultExtension = null
@@ -2871,6 +2882,7 @@ Item {
   Process {
     id: extensionQueryProc
     property string query: ""
+    property string normalizedQuery: ""
     property string extensionId: ""
     property string collected: ""
     property bool outputOverflow: false
@@ -2895,6 +2907,7 @@ Item {
       )
       if (accept) {
         root.extensionQuery = extensionQueryProc.query
+        root.extensionExpression = extensionQueryProc.normalizedQuery
         root.extensionResult = exitCode === 0 && !extensionQueryProc.outputOverflow ? extensionQueryProc.collected.trim() : ""
         root.rebuildDisplay()
         if (root.extensionResult && root.resultExtension.capability === "currency") currencyRates.refreshIfStale()

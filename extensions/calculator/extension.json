@@ -14,6 +14,7 @@
     "any": ["\\b(to|in)\\b", "[+\\-*\\/%^]"],
     "none": ["[+\\-*\\/%^(]\\s*$"]
   },
+  "normalizeUnits": true,
   "command": ["qalc", "-t", "-m", "1500", "{query}"],
   "resultCommand": ["wl-copy", "--", "{result}"]
 }

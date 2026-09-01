@@ -675,16 +675,67 @@ assert(menu.formatCalculationValue('EUR 0.004') === '0.004 EUR',
   'two decimals never round a small non-zero amount away to nothing')
 assert(menu.formatCalculationValue('JPY 0') === '0.00 JPY',
   'a genuine zero still formats as a currency amount')
-assert(menu.formatCalculationValue('1000 m') === '1000 m'
-  && menu.formatCalculationValue('1.5 m/s') === '1.5 m/s'
-  && menu.formatCalculationValue('2 h 30 min') === '2 h 30 min',
-  'unit answers keep their own shape')
+assert(menu.formatCalculationValue('1.5 m/s') === '1.5 m/s'
+  && menu.formatCalculationValue('2 h 30 min') === '2 h 30 min'
+  && menu.formatCalculationValue('15 mL') === '15 mL',
+  'unit answers keep their own units and separators')
+assert(menu.formatCalculationValue('81.6466266 kg') === '81.65 kg'
+  && menu.formatCalculationValue('4046.856422 m\u00b2') === '4,046.86 m\u00b2'
+  && menu.formatCalculationValue('1000 m') === '1,000 m',
+  'unit answers above one are tidied to two decimals and grouped')
+assert(menu.formatCalculationValue('0.3962580785 gal') === '0.3963 gal'
+  && menu.formatCalculationValue('0.00004521 m') === '0.00004521 m',
+  'a value below one keeps four significant digits rather than being flattened')
+assert(menu.formatCalculationValue('154 lb + 5.177336471 oz') === '154 lb + 5.18 oz',
+  'every number in a mixed-unit answer is tidied')
 assert(menu.formatCalculationValue('13.890000') === '13.89'
   && menu.formatCalculationValue('0.30000000') === '0.3'
   && menu.formatCalculationValue('20') === '20',
   'trailing zeros are trimmed without touching whole numbers')
-assert(menu.formatCalculationValue('rem(25, 1 B)') === 'rem(25, 1 B)',
-  'an answer qalc could not evaluate is passed through untouched')
+assert(menu.formatCalculationValue('rem(25, 1 B)') === 'rem(25, 1 B)'
+  && menu.formatCalculationValue('f(1, 2, 3)') === 'f(1, 2, 3)',
+  'a comma between arguments is not mistaken for a thousands separator')
+assert(menu.tidyNumber('81.6466266') === '81.65' && menu.tidyNumber('0.3962580785') === '0.3963'
+  && menu.tidyNumber('1000') === '1,000' && menu.tidyNumber('nope') === 'nope',
+  'number tidying handles magnitudes, grouping, and non-numbers')
+
+// ---- unit aliases qalc misreads ----
+
+assert(menu.normalizeCalculationQuery('180 lbs to kg') === '180 lb to kg'
+  && menu.normalizeCalculationQuery('5 kms to m') === '5 km to m'
+  && menu.normalizeCalculationQuery('3 tsps to ml') === '3 tsp to ml',
+  'an abbreviated plural is singularised, because qalc reads it as unit times seconds')
+assert(menu.normalizeCalculationQuery('500 ms to s') === '500 ms to s'
+  && menu.normalizeCalculationQuery('20 ns to ms') === '20 ns to ms',
+  'SI-prefixed seconds are real units and must survive untouched')
+assert(menu.normalizeCalculationQuery('60 kmh to mph') === '60 km/h to mph'
+  && menu.normalizeCalculationQuery('60 mps to kmh') === '60 m/s to km/h',
+  'compact rate spellings become the ones qalc evaluates')
+assert(menu.normalizeCalculationQuery('100 c to f') === '100 \u00b0C to \u00b0F'
+  && menu.normalizeCalculationQuery('100 C to F') === '100 \u00b0C to \u00b0F'
+  && menu.normalizeCalculationQuery('100 degC to degF') === '100 \u00b0C to \u00b0F'
+  && menu.normalizeCalculationQuery('212 f to celsius') === '212 \u00b0F to \u00b0C'
+  && menu.normalizeCalculationQuery('300 k to c') === '300 K to \u00b0C',
+  'a temperature conversion is rewritten whichever way it was spelled')
+assert(menu.normalizeCalculationQuery('3 c to m') === '3 c to m'
+  && menu.normalizeCalculationQuery('5 km to m') === '5 km to m'
+  && menu.normalizeCalculationQuery('sin(30)') === 'sin(30)'
+  && menu.normalizeCalculationQuery('time 3pm in tokyo') === 'time 3pm in tokyo',
+  'a bare letter is only a temperature when both sides of the conversion are')
+assert(menu.normalizeCalculationQuery('') === '' && menu.normalizeCalculationQuery(null) === '',
+  'an empty query normalises to nothing')
+
+const unitExtensions = menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'calc', mode: 'query', label: 'Calc',
+  match: { all: ['\\d'] }, normalizeUnits: true, command: ['true']
+}, {
+  schemaVersion: 1, id: 'other', mode: 'query', label: 'Other',
+  match: { all: ['\\d'] }, command: ['true']
+}]))
+assert(unitExtensions[0].normalizeUnits === true && unitExtensions[1].normalizeUnits === false,
+  'unit rewriting is opt-in per extension, so a third-party provider is never rewritten')
+assert(menu.openStateReset().extensionExpression === '',
+  'a new launcher session drops the displayed expression')
 assert(menu.formatCalculationValue('') === '' && menu.formatCalculationValue(null) === '',
   'an empty answer formats to nothing')
 assert(menu.formatCalculationValue(' 42 ') === '42', 'answers are trimmed')

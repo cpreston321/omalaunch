@@ -537,6 +537,7 @@ function openStateReset() {
     emojiExtension: null,
     focusedExtension: null,
     extensionQuery: "",
+    extensionExpression: "",
     extensionResult: "",
     resultExtension: null,
     unavailableResultExtension: null
@@ -930,6 +931,7 @@ function normalizeExtension(raw) {
     extension.matchNoneRegex = []
     extension.resultCommand = stringArray(raw.resultCommand)
     if (extension.resultCommand.length === 0) extension.resultCommand = ["wl-copy", "--", "{result}"]
+    extension.normalizeUnits = raw.normalizeUnits === true
     if (extension.matchAll.length === 0 && extension.matchAny.length === 0) return null
     try {
       for (var j = 0; j < extension.matchAll.length; j++) {
@@ -1785,6 +1787,55 @@ function emojiSections(values, query, options) {
   return { cells: cells, rows: rows, sectioned: true }
 }
 
+// qalc reads an abbreviated plural as the singular times seconds — "lbs" is
+// lb·s, "kms" is km·s, "tsps" is tsp·s — and reads a bare temperature letter as
+// a physics constant: "c" the speed of light, "f" femto, "k" kilo. So "180 lbs
+// to kg" answered "81.65 kg·s" and "100 c to f" answered "2.99e25 fm/s".
+// Neither is what someone typing into a launcher means.
+//
+// The map is curated rather than a rule that strips a trailing "s", because
+// ms, ns, ps, us and fs are real units: SI-prefixed seconds. Stripping those
+// would break "500 ms to s".
+var UNIT_ALIASES = {
+  kms: "km", cms: "cm", mms: "mm", fts: "ft", ins: "in", yds: "yd", mis: "mi",
+  lbs: "lb", ozs: "oz", kgs: "kg",
+  gals: "gal", qts: "qt", pints: "pint", tsps: "tsp", tbsps: "tbsp",
+  mins: "min", secs: "sec",
+  // Compact rates qalc does not recognise. kph and mph it does.
+  kmh: "km/h", kmph: "km/h", mps: "m/s"
+}
+
+var TEMPERATURE_UNITS = {
+  c: "°C", celsius: "°C", centigrade: "°C", degc: "°C", "°c": "°C",
+  f: "°F", fahrenheit: "°F", degf: "°F", "°f": "°F",
+  k: "K", kelvin: "K", degk: "K"
+}
+
+var TEMPERATURE_CONVERSION = /^([\s\S]*?)([A-Za-z°]+)\s+(to|in)\s+([A-Za-z°]+)\s*$/i
+
+function normalizeCalculationQuery(query) {
+  var text = String(query === undefined || query === null ? "" : query)
+  if (!text.trim()) return text
+
+  // Unit aliases are unambiguous, so a plain token swap is safe anywhere.
+  text = text.replace(/[A-Za-z]+/g, function(token) {
+    var alias = UNIT_ALIASES[token.toLowerCase()]
+    return alias === undefined ? token : alias
+  })
+
+  // Temperature is rewritten only when both sides of the conversion are
+  // temperatures. That is what makes a bare "c" safe to touch: on its own it
+  // still means the speed of light, and "3 c to m" is left alone.
+  var pair = TEMPERATURE_CONVERSION.exec(text)
+  if (pair) {
+    var from = TEMPERATURE_UNITS[pair[2].toLowerCase()]
+    var to = TEMPERATURE_UNITS[pair[4].toLowerCase()]
+    if (from && to) text = pair[1] + from + " " + pair[3] + " " + to
+  }
+
+  return text
+}
+
 // qalc prints a currency code before the amount and to full precision
 // ("CAD 13.89019350"). A conversion is read as money, so present it the way
 // money is written: amount first, two decimals, grouped thousands.
@@ -1803,6 +1854,20 @@ function trimTrailingZeros(text) {
   var value = String(text)
   if (value.indexOf(".") < 0) return value
   return value.replace(/(\.[0-9]*?)0+$/, "$1").replace(/\.$/, "")
+}
+
+// qalc answers to full precision: "81.6466266 kg", "0.3962580785 gal". Two
+// decimals reads well above 1, but would flatten a value below it, so a small
+// number keeps four significant digits instead.
+function tidyNumber(raw) {
+  var text = String(raw)
+  var amount = Number(text.replace(/,/g, ""))
+  if (!isFinite(amount)) return text
+  var tidy = Math.abs(amount) >= 1 ? amount.toFixed(2) : amount.toPrecision(4)
+  // toPrecision can return exponential notation for very small values, which
+  // is less readable here than the original digits.
+  if (tidy.indexOf("e") >= 0 || tidy.indexOf("E") >= 0) return text
+  return groupThousands(trimTrailingZeros(tidy))
 }
 
 function isCurrencyResult(raw) {
@@ -1824,11 +1889,12 @@ function formatCalculationValue(raw) {
     return groupThousands(fixed) + " " + currency[1].toUpperCase()
   }
 
-  // Everything else keeps its own shape — units, ratios, times, and anything
-  // qalc could not evaluate — with only the number tidied.
-  var leading = LEADING_NUMBER.exec(text)
-  if (leading) return trimTrailingZeros(leading[1]) + leading[2]
-  return text
+  // Everything else keeps its own shape — units, ratios, times, mixed units
+  // like "154 lb + 5.18 oz", and anything qalc could not evaluate — with every
+  // number in it tidied.
+  // A comma counts as a thousands separator only when three digits follow it,
+  // so a comma between arguments — "rem(25, 1 B)" — is left where it is.
+  return text.replace(/[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?/g, function(number) { return tidyNumber(number) })
 }
 
 // The expression shown beside the answer. Currency codes are uppercased only
@@ -2127,7 +2193,9 @@ if (typeof module !== "undefined") {
     emojiSections: emojiSections,
     groupThousands: groupThousands,
     trimTrailingZeros: trimTrailingZeros,
+    tidyNumber: tidyNumber,
     isCurrencyResult: isCurrencyResult,
+    normalizeCalculationQuery: normalizeCalculationQuery,
     formatCalculationValue: formatCalculationValue,
     calculationExpression: calculationExpression,
     displayRow: displayRow,
