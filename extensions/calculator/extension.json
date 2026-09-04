@@ -10,7 +10,7 @@
   "priority": 10,
   "requires": ["qalc", "wl-copy"],
   "match": {
-    "all": ["^\\s*[+-]?(?:\\d|\\.\\d)", "\\d"],
+    "all": ["^\\s*[+-]?\\s*(?:\\d|\\.\\d|\\([\\s(+\\-]*(?:\\d|\\.\\d))", "\\d"],
     "any": ["\\b(to|in)\\b", "[+\\-*\\/%^]",
       "(?:^|[\\s\\d])(inch|inches|cm|mm|km|mi|miles?|ft|foot|feet|yds?|yards?|lbs?|pounds?|kgs?|ozs?|ounces?|tons?|gals?|gallons?|ml|floz|cups?|tsps?|tbsps?|celsius|fahrenheit|mph|kmh|kph|litres?|liters?)\\s*$",
       "\\d\\s+(m|g|l)\\s*$"],

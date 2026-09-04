@@ -14,6 +14,11 @@ const context = { module: { exports: {} } }
 vm.runInNewContext(source, context)
 const menu = context.module.exports
 
+assert(menu.utf8ByteLength('GitHub') === 6, 'UTF-8 limits count ASCII bytes')
+assert(menu.utf8ByteLength('é') === 2, 'UTF-8 limits count multibyte characters')
+assert(menu.utf8ByteLength('󰊤') === 4, 'UTF-8 limits count surrogate pairs once')
+assert(menu.utf8ByteLength('\ud800') === 3, 'UTF-8 limits count an unpaired surrogate as replacement bytes')
+
 const validMenuSnapshot = menu.parseMenuJsoncSnapshot('{"items":{"root":{"label":"Root"}}}')
 assert(validMenuSnapshot.valid && validMenuSnapshot.items.length === 1, 'valid menu snapshots are identified')
 assert(menu.parseMenuJsoncSnapshot('{}').valid, 'empty menu objects remain valid snapshots')
@@ -74,8 +79,8 @@ assert(filesExtension.length === 1 && filesExtension[0].mode === 'files', 'file 
 const partialFilesSuggestion = menu.suggestExtensions(filesExtension, 'fil')[0]
 const exactFilesSuggestion = menu.suggestExtensions(filesExtension, 'files')[0]
 assert(partialFilesSuggestion.extension.id === 'files', 'file browser extensions appear in prefix suggestions')
-assert(menu.extensionSuggestionPriority(partialFilesSuggestion, 'fil') === 20, 'partial extension suggestions receive low priority')
-assert(menu.extensionSuggestionPriority(exactFilesSuggestion, ' FILES ') === 95, 'exact extension prefixes outrank exact app titles')
+assert(menu.extensionSuggestionPriority(partialFilesSuggestion, 'fil') === 20, 'partial extension suggestions receive alias-prefix priority')
+assert(menu.extensionSuggestionPriority(exactFilesSuggestion, ' FILES ') === 30, 'exact extension prefixes receive exact-alias priority')
 assert(menu.extensionSuggestionPriority({ extension: { available: false }, prefix: 'files' }, 'files') === 0, 'unavailable extension suggestions receive no priority boost')
 assert(menu.extensionMatchPriority(filesExtension[0]) === 100, 'explicit available extension invocations receive top priority')
 assert(menu.extensionMatchPriority({ available: false }) === 0, 'unavailable extension invocations receive no priority boost')
@@ -113,7 +118,10 @@ const favoriteSearchItem = menu.fileFavoriteItem('file.favorite.directory:/home/
 assert(favoriteSearchItem.id === menu.fileFavoriteId('/home/quantumfire/Downloads', 'directory', 'files'), 'favorite search items canonicalize legacy ids')
 assert(favoriteSearchItem.label === 'Downloads' && favoriteSearchItem.action === '/home/quantumfire/Downloads', 'favorite search items retain their label and path action')
 assert(menu.matchesFileFavoriteQuery(favoriteSearchItem, menu.prepareSearchQuery('downloads')), 'favorite search items match their visible labels')
-assert(menu.matchesFileFavoriteQuery(favoriteSearchItem, menu.prepareSearchQuery('home quantumfire')), 'favorite search items match path components')
+assert(menu.matchesFileFavoriteQuery(favoriteSearchItem, menu.prepareSearchQuery('home quantumfire')), 'favorite search items match path-component prefixes')
+assert(menu.matchesFileFavoriteQuery(favoriteSearchItem, menu.prepareSearchQuery('home downloads')), 'favorite search terms can match both path components and the visible label')
+assert(!menu.matchesFileFavoriteQuery(favoriteSearchItem, menu.prepareSearchQuery('fi')), 'short queries do not match inside shared path components')
+assert(!menu.matchesFileFavoriteQuery(favoriteSearchItem, menu.prepareSearchQuery('fire')), 'path matching does not start in the middle of a component')
 assert(!menu.matchesFileFavoriteQuery(favoriteSearchItem, menu.prepareSearchQuery('documents')), 'nonmatching file favorites remain hidden from search')
 assert(!menu.matchesFileFavoriteQuery(favoriteSearchItem, menu.prepareSearchQuery('files')), 'favorite search ignores the hidden extension capability in canonical ids')
 assert(!menu.matchesFileFavoriteQuery(favoriteSearchItem, menu.prepareSearchQuery('directory')), 'favorite search ignores the hidden path type in canonical ids')
@@ -206,6 +214,8 @@ const bundledExtensions = menu.parseExtensions(JSON.stringify([
   { ...JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'extensions', 'currency', 'extension.json'), 'utf8')), _bundled: true }
 ]))
 assert(menu.queryExtension(bundledExtensions, '2 + 2').capability === 'calculator', 'bundled calculator matches arithmetic')
+assert(menu.queryExtension(bundledExtensions, '(2 + 2) * 3').capability === 'calculator', 'bundled calculator matches expressions beginning with parentheses')
+assert(menu.queryExtension(bundledExtensions, '(-1 + 1) * 2').capability === 'calculator', 'bundled calculator matches unary signs inside opening parentheses')
 assert(menu.queryExtension(bundledExtensions, '10 USD to CAD').capability === 'currency', 'bundled currency extension outranks general conversions')
 assert(menu.queryExtension(bundledExtensions, 'hello') === null, 'bundled extensions ignore ordinary searches')
 const calculatorResult = bundledExtensions.find(extension => extension.capability === 'calculator')
@@ -262,8 +272,229 @@ const workflowExtensions = menu.parseExtensions(JSON.stringify([{
     }]
   }
 }]))
+const dynamicMenuExtensions = menu.parseExtensions(JSON.stringify([{
+  schemaVersion: 1, id: 'quicklinks', capability: 'quicklinks', mode: 'menu', label: 'Quicklinks',
+  prefixes: ['links'], command: ['{extensionDir}/bin/menu', '--json'], globalSearch: true,
+  globalSearchCommand: ['{extensionDir}/bin/menu', '--global-search']
+}, {
+  schemaVersion: 1, id: 'private-menu', mode: 'menu', label: 'Private', prefixes: ['private'], command: ['private-menu']
+}]))
+assert(dynamicMenuExtensions.length === 2 && dynamicMenuExtensions[0].command[0] === '{extensionDir}/bin/menu', 'dynamic menu provider extensions are parsed')
+assert(dynamicMenuExtensions[0].globalSearch && !dynamicMenuExtensions[1].globalSearch, 'dynamic menu global search is explicit opt-in')
+assert(dynamicMenuExtensions[0].globalSearchCommand[1] === '--global-search', 'dynamic menus retain a separate global search command')
+assert(menu.normalizeExtension({ schemaVersion: 1, id: 'bad-search-command', mode: 'menu', label: 'Bad', prefixes: ['bad'], command: ['menu'], globalSearch: true, globalSearchCommand: 'search' }) === null, 'global search commands must be argument arrays')
+assert(menu.normalizeExtension({ schemaVersion: 1, id: 'disabled-search-command', mode: 'menu', label: 'Bad', prefixes: ['bad'], command: ['menu'], globalSearchCommand: ['search'] }) === null, 'separate search commands require global search opt-in')
+assert(menu.normalizeExtension({ schemaVersion: 1, id: 'wrong-mode-search-command', mode: 'prefix', label: 'Bad', prefixes: ['bad'], command: ['run'], globalSearchCommand: ['search'] }) === null, 'separate search commands are limited to menu extensions')
+assert(menu.extensionRootActivation(dynamicMenuExtensions[0]) === 'menu', 'dynamic menu roots start their provider')
+const dynamicMenu = menu.normalizeDynamicMenuOutput(JSON.stringify({ items: [
+  { id: 'open', label: 'Open docs', description: 'Documentation', aliases: ['manual', 'reference'], starred: true, starAction: 'star', command: ['xdg-open', 'https://example.test'], closeOnSuccess: true, actions: [
+    { id: 'star', label: 'Unstar', command: ['links', 'star', 'open', 'false'] },
+    { id: 'open', label: 'Open', command: ['xdg-open', 'https://example.test'], closeOnSuccess: true },
+    { id: 'delete', label: 'Delete', confirm: 'Delete this link?', confirmLabel: 'Delete', command: ['links', 'delete', 'open'], refreshExtensions: true }
+  ] },
+  { id: 'add', label: 'Add Quicklink', input: { prompt: 'URL', maxLength: 200, command: ['links', 'add', '{input}'] } }
+] }))
+assert(dynamicMenu && dynamicMenu.items.length === 2, 'bounded dynamic menu output is normalized')
+assert(dynamicMenu.items[0].kind === 'action' && dynamicMenu.items[0].actions[2].kind === 'confirm', 'rows retain direct actions and contextual confirmations')
+assert(dynamicMenu.items[0].closeOnSuccess, 'launch rows can request launcher closure after successful dispatch')
+assert(dynamicMenu.items[0].starred, 'dynamic rows retain explicit starred state')
+assert(dynamicMenu.items[0].starAction === 'star', 'dynamic rows can identify a direct Ctrl+S star action')
+const dynamicSearchItems = menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], dynamicMenu)
+assert(dynamicSearchItems.length === 2 && dynamicSearchItems[0].aliases.join(',') === 'manual,reference', 'search rows retain bounded provider aliases')
+assert(menu.matchesQuery(dynamicSearchItems[0], menu.prepareSearchQuery('documentation'), true), 'dynamic menu rows search descriptions')
+assert(menu.matchesQuery(dynamicSearchItems[0], menu.prepareSearchQuery('reference'), true), 'dynamic menu rows search aliases')
+assert(!menu.matchesQuery(dynamicSearchItems[0], menu.prepareSearchQuery('quicklinks'), true), 'dynamic routing identities do not leak provider capabilities into search')
+assert(menu.matchesQuery(dynamicSearchItems[1], menu.prepareSearchQuery('quicklink'), true), 'dynamic rows still match provider words in visible labels')
+assert(menu.dynamicMenuSearchIdentity(dynamicSearchItems[0].id).capability === 'quicklinks', 'dynamic search identities retain stable extension capability')
+assert(menu.dynamicMenuItemId('quicklinks', 'open') === dynamicSearchItems[0].id, 'dynamic usage uses the stable synthetic search identity')
+const quicklinksUsageId = menu.dynamicMenuItemId(dynamicMenuExtensions[0].id, dynamicMenu.items[0].id)
+assert(menu.dynamicMenuUsageItemId(dynamicMenuExtensions[0], dynamicMenu.items[0]) === quicklinksUsageId, 'provider-menu primary launches map to a provider-owned usage identity')
+assert(menu.dynamicMenuUsageItemId(dynamicMenuExtensions[0], dynamicMenu.items[0].actions.find(action => action.id === 'open')) === quicklinksUsageId, 'contextual Open maps to its primary provider-owned usage identity')
+assert(menu.dynamicMenuUsageItemId(dynamicMenuExtensions[0], dynamicMenu.items[0].actions.find(action => action.id === 'star')) === '', 'contextual mutations do not publish usage')
+assert(menu.dynamicMenuUsageItemId(dynamicMenuExtensions[0], dynamicMenu.items[0].actions.find(action => action.id === 'delete')) === '', 'unrelated confirmations do not publish usage')
+assert(menu.dynamicMenuUsageItemId(dynamicMenuExtensions[0], dynamicMenu.items[1]) === '', 'Add and other non-launch mutations do not publish usage')
+assert(menu.dynamicMenuUsageItemId({ ...dynamicMenuExtensions[0], id: 'omalaunch.quicklinks', config: { rankByUsage: false } }, dynamicMenu.items[0]) === '', 'bundled Quicklinks can disable usage ranking')
+assert(menu.dynamicMenuUsageItemId({ ...dynamicMenuExtensions[0], id: 'replacement.quicklinks', config: { rankByUsage: false } }, dynamicMenu.items[0]) === menu.dynamicMenuItemId('replacement.quicklinks', 'open'), 'bundled Quicklinks configuration does not control replacement providers or leak usage identity')
+assert(menu.dynamicMenuUsageItemId({ ...dynamicMenuExtensions[0], id: 'omalaunch.web-search', config: { rankByUsage: false } }, dynamicMenu.items[0]) === '', 'bundled Web Search can disable usage ranking for all engines')
+assert(menu.dynamicMenuSearchIdentity('extension.menu:not-json') === null, 'malformed dynamic search identities are rejected')
+assert(dynamicMenu.items[0].actions[2].refreshExtensions, 'mutation actions can request an extension refresh')
+assert(dynamicMenu.items[1].kind === 'input' && dynamicMenu.items[1].prompt === 'URL', 'rows can open bounded host input forms')
+assert(menu.workflowCommand(dynamicMenu.items[1], 'https://literal.test/?q=$(bad)', {}).slice(-1)[0] === 'https://literal.test/?q=$(bad)', 'dynamic input is substituted as one literal argument')
+const scopedSearch = menu.normalizeDynamicMenuOutput([
+  { id: 'global', label: 'Google', starredLabel: 'Web · Google', globalSearch: true, trailingIcon: 'globe', trailingText: '⌘ G', badge: '12', badgeTone: 'success', command: ['search', 'google'] },
+  { id: 'menu-only', label: 'Bing', globalSearch: false, command: ['search', 'bing'] }
+])
+assert(menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], scopedSearch).length === 1, 'dynamic rows can remain in their extension menu without entering global search')
+assert(menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], scopedSearch)[0].trailingIcon === 'globe', 'dynamic rows retain bounded trailing icons')
+assert(menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], scopedSearch)[0].trailingText === '⌘ G', 'dynamic search rows retain bounded trailing text')
+assert(menu.displayRow({}, [], {}, scopedSearch.items[0], '', 0, '').trailingText === '⌘ G', 'display rows retain bounded trailing text')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'long-trailing', label: 'Long', trailingText: 'x'.repeat(65), command: ['true'] }]).items[0].trailingText === '', 'oversized dynamic row trailing text is omitted')
+assert(menu.normalizeItem('bounded', { trailingText: 'x'.repeat(65) }).trailingText.length === 64, 'normalized row trailing text is bounded to 64 characters')
+assert(menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], scopedSearch)[0].badge === '12', 'dynamic rows retain bounded badges')
+assert(menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], scopedSearch)[0].badgeTone === 'success', 'dynamic rows retain semantic badge tones')
+assert(menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], scopedSearch)[0].label === 'Google', 'unstarred dynamic rows retain their menu label')
+scopedSearch.items[0].starred = true
+assert(menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], scopedSearch)[0].label === 'Web · Google', 'starred dynamic rows use their distinct top-level label')
+scopedSearch.items[0].starred = false
+assert(menu.normalizeDynamicMenuOutput([{ id: 'badge', label: 'Badge', badge: 'x'.repeat(17), command: ['true'] }]).items[0].badge === '', 'oversized dynamic row badges are omitted')
+const separateGlobalSearchMenu = menu.normalizeDynamicMenuOutput({
+  items: [{ id: 'visible', label: 'Visible only', command: ['open-visible'] }],
+  globalSearchItems: [{ id: 'search', label: 'Search only', aliases: ['dedicated'], command: ['open-search'] }]
+})
+assert(separateGlobalSearchMenu.items.length === 1 && separateGlobalSearchMenu.items[0].id === 'visible',
+  'dedicated global search rows do not change the visible dynamic menu collection')
+const separateGlobalSearchItems = menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], separateGlobalSearchMenu)
+assert(separateGlobalSearchItems.length === 1 && separateGlobalSearchItems[0].label === 'Search only'
+  && separateGlobalSearchItems[0].aliases[0] === 'dedicated',
+  'dedicated global search rows replace visible rows as the dynamic search source')
+assert(menu.dynamicMenuSearchNodes(separateGlobalSearchMenu)[0].command[0] === 'open-search',
+  'dedicated global search actions use the dedicated source nodes')
+const emptyGlobalSearchMenu = menu.normalizeDynamicMenuOutput({
+  items: [{ id: 'visible', label: 'Visible only', command: ['true'] }], globalSearchItems: []
+})
+assert(emptyGlobalSearchMenu && menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], emptyGlobalSearchMenu).length === 0,
+  'an explicit empty global search collection disables dynamic search rows')
+const legacyObjectMenu = menu.normalizeDynamicMenuOutput({ items: [
+  { id: 'legacy-object', label: 'Legacy object', command: ['true'] }
+] })
+assert(menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], legacyObjectMenu)[0].label === 'Legacy object',
+  'object responses without global search rows preserve visible-row search behavior')
+assert(menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], scopedSearch)[0].label === 'Google',
+  'array responses preserve visible-row search behavior')
+assert(menu.normalizeDynamicMenuOutput({
+  items: [{ id: 'visible', label: 'Visible', command: ['true'] }], globalSearchItems: {}
+}) === null, 'malformed dedicated global search collections are rejected')
+assert(menu.normalizeDynamicMenuOutput({
+  items: [{ id: 'visible', label: 'Visible', command: ['true'] }],
+  globalSearchItems: [{ id: 'same', label: 'One', command: ['true'] }, { id: 'same', label: 'Two', command: ['true'] }]
+}) === null, 'dedicated global search row ids must be unique within their collection')
+assert(menu.normalizeDynamicMenuOutput({
+  items: [{ id: 'shared', label: 'Visible', command: ['true'] }],
+  globalSearchItems: [{ id: 'shared', label: 'Search', command: ['true'] }]
+}) !== null, 'visible and dedicated global search collections normalize ids independently')
+assert(menu.normalizeDynamicMenuOutput({
+  items: [{ id: 'visible', label: 'Visible', command: ['true'] }],
+  globalSearchItems: Array.from({ length: 101 }, (_, i) => ({ id: String(i), label: String(i), command: ['true'] }))
+}) === null, 'dedicated global search row counts are independently bounded')
+assert(menu.normalizeDynamicMenuOutput({
+  items: Array.from({ length: 101 }, (_, i) => ({ id: String(i), label: String(i), command: ['true'] })),
+  globalSearchItems: [{ id: 'search', label: 'Search', command: ['true'] }]
+}) === null, 'visible dynamic menu row counts remain independently bounded')
+assert(menu.normalizeDynamicMenuOutput({
+  items: [{ id: 'visible', label: 'Visible', command: ['true'] }],
+  globalSearchItems: [{ id: 'bad', label: 'Bad', command: 'true' }]
+}) === null, 'dedicated global search rows use strict row normalization')
+const capturedMenu = menu.normalizeDynamicMenuOutput([{ id: 'add', label: 'Add', input: {
+  prompt: 'Target', capture: 'target', next: { id: 'name', kind: 'input', label: 'Name', command: ['links', 'add', '{target}', '{input}'] }
+} }])
+const capturedTransition = menu.workflowInputTransition(capturedMenu.items[0], 'https://example.test', {})
+assert(capturedTransition.context.target === 'https://example.test' && capturedTransition.node.id === 'name', 'input capture passes a named literal value to the next host input without persistent draft state')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'bad-capture', label: 'Bad', input: { prompt: 'Bad', capture: '__proto__', command: ['true'] } }]) === null, 'input capture names reject unsafe structural keys')
+assert(menu.normalizeDynamicMenuOutput('{bad') === null, 'malformed dynamic menu output is rejected')
+assert(menu.normalizeDynamicMenuOutput({ items: Array.from({ length: 101 }, (_, i) => ({ id: String(i), label: String(i), command: ['true'] })) }) === null, 'dynamic menu row counts are bounded')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'bad', label: 'Bad', command: 'true' }]) === null, 'dynamic menu commands must be argument arrays')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'same', label: 'One', command: ['true'] }, { id: 'same', label: 'Two', command: ['true'] }]) === null, 'dynamic menu row ids are unique')
+const documentMenu = menu.normalizeDynamicMenuOutput([{ id: 'inspect', label: 'Inspect', document: {
+  command: ['helper', 'detail', '--cached'], refreshCommand: ['helper', 'detail', '--refresh']
+} }])
+assert(documentMenu && documentMenu.items[0].kind === 'action'
+  && documentMenu.items[0].command.length === 0
+  && documentMenu.items[0].documentCommand.join(',') === 'helper,detail,--cached'
+  && documentMenu.items[0].documentRefreshCommand.join(',') === 'helper,detail,--refresh',
+'dynamic action rows can request a document without a primary command')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'bad-document', label: 'Bad', document: { command: 'helper detail' } }]) === null,
+'dynamic document commands must be argument arrays')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'bad-document-extra', label: 'Bad', document: { command: ['true'], format: 'html' } }]) === null,
+'dynamic document requests reject unsupported fields')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'bad-document-command', label: 'Bad', document: { command: Array(33).fill('x') } }]) === null,
+'dynamic document commands have a bounded argument count')
+const submenuMenu = menu.normalizeDynamicMenuOutput([{
+  id: 'projects', label: 'Projects', submenu: {
+    command: ['helper', 'projects', '--cached'], refreshCommand: ['helper', 'projects', '--refresh']
+  }
+}])
+assert(submenuMenu && submenuMenu.items[0].kind === 'action'
+  && submenuMenu.items[0].command.length === 0
+  && submenuMenu.items[0].submenuCommand.join(',') === 'helper,projects,--cached'
+  && submenuMenu.items[0].submenuRefreshCommand.join(',') === 'helper,projects,--refresh',
+'dynamic action rows can request an on-demand submenu without a primary command')
+const nestedSubmenu = menu.normalizeDynamicMenuOutput(JSON.stringify({ items: [
+  { id: 'open', label: 'Open project', command: ['xdg-open', '/tmp/project'] },
+  { id: 'recent', label: 'Recent', submenu: { command: ['helper', 'recent'] } }
+] }))
+assert(nestedSubmenu && nestedSubmenu.items.length === 2
+  && nestedSubmenu.items[1].submenuCommand.join(',') === 'helper,recent',
+'submenu provider output uses the same dynamic menu normalization recursively')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'bad-submenu', label: 'Bad', submenu: ['helper'] }]) === null,
+'dynamic submenu requests must be strict command objects')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'bad-submenu-extra', label: 'Bad', submenu: { command: ['true'], format: 'menu' } }]) === null,
+'dynamic submenu requests reject unsupported fields')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'bad-submenu-empty', label: 'Bad', submenu: { command: [] } }]) === null,
+'dynamic submenu commands require at least one argument')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'bad-submenu-argument', label: 'Bad', submenu: { command: ['helper', ''] } }]) === null,
+'dynamic submenu command arguments must be nonempty strings')
+assert(menu.normalizeDynamicMenuOutput([{ id: 'bad-submenu-command', label: 'Bad', submenu: { command: Array(33).fill('x') } }]) === null,
+'dynamic submenu commands have a bounded argument count')
+assert(menu.normalizeDynamicMenuOutput([{
+  id: 'ambiguous', label: 'Ambiguous', document: { command: ['detail'] }, submenu: { command: ['children'] }
+}]) === null, 'dynamic rows cannot declare both a document and a submenu')
+
+const detailDocument = menu.normalizeDetailDocument({
+  title: 'Build report', subtitle: 'main', status: 'Ready', icon: 'repo', iconFont: 'icons',
+  stats: [{ label: 'Stars', value: '12', icon: 'star' }],
+  fields: [{ label: 'Commit', value: '<b>literal</b>' }],
+  sections: [
+    { heading: 'Summary', text: 'No rich text is evaluated.' },
+    { heading: 'Notes', text: '**Markdown** is host rendered.', format: 'markdown' }
+  ],
+  actions: [
+    { id: 'copy', label: 'Copy', command: ['wl-copy', '--', '<b>literal</b>'] },
+    { id: 'remove', label: 'Remove', confirm: 'Remove it?', command: ['helper', 'remove'] },
+    { id: 'rename', label: 'Rename', input: { prompt: 'Name', command: ['helper', 'rename', '{input}'] } }
+  ]
+})
+assert(detailDocument && detailDocument.title === 'Build report'
+  && detailDocument.icon === 'repo' && detailDocument.stats[0].value === '12'
+  && detailDocument.fields[0].value === '<b>literal</b>'
+  && detailDocument.sections[0].format === 'plain'
+  && detailDocument.sections[1].format === 'markdown'
+  && detailDocument.actions.map(action => action.kind).join(',') === 'action,confirm,input',
+'structured detail documents retain bounded plain text and host-normalized actions')
+assert(menu.normalizeDetailDocument({ subtitle: 'Missing title' }) === null, 'detail documents require a title')
+assert(menu.normalizeDetailDocument({ title: 'Report', stats: Array.from({ length: 7 }, (_, i) => ({ label: String(i), value: '1' })) }) === null,
+'detail document statistic counts are bounded')
+assert(menu.normalizeDetailDocument({ title: 'Report', stats: [{ label: 'Stars', value: '1', html: '<b>1</b>' }] }) === null,
+'detail document statistics reject unsupported fields')
+assert(menu.normalizeDetailDocument({ title: 'Report', fields: Array.from({ length: 33 }, (_, i) => ({ label: String(i), value: 'x' })) }) === null,
+'detail document field counts are bounded')
+assert(menu.normalizeDetailDocument({ title: 'Report', sections: Array.from({ length: 17 }, (_, i) => ({ heading: String(i), text: 'x' })) }) === null,
+'detail document section counts are bounded')
+assert(menu.normalizeDetailDocument({ title: 'Report', sections: [{ heading: 'Bad', text: 'x', format: 'html' }] }) === null,
+'detail document sections reject unsupported formats')
+assert(menu.normalizeDetailDocument({ title: 'Report', sections: [{ heading: 'Bad', text: 'x', format: 1 }] }) === null,
+'detail document section formats must be plain or markdown strings')
+assert(menu.normalizeDetailDocument({ title: 'Report', actions: Array.from({ length: 17 }, (_, i) => ({ id: String(i), label: String(i), command: ['true'] })) }) === null,
+'detail document action counts are bounded')
+assert(menu.normalizeDetailDocument({ title: 'Report', sections: [
+  { heading: 'One', text: 'x'.repeat(32768) }, { heading: 'Two', text: 'x'.repeat(32768) }
+] }) === null, 'detail documents have a 64 KiB aggregate text limit')
+assert(menu.normalizeDetailDocument({ title: 'Report', sections: [
+  { heading: 'Unicode', text: '界'.repeat(32768) }
+] }) === null, 'detail document aggregate limits count UTF-8 bytes')
+assert(menu.normalizeDetailDocument({ title: 'Report', format: 'html' }) === null,
+'detail documents reject unsupported rich-content fields')
+
 assert(workflowExtensions.length === 1 && workflowExtensions[0].mode === 'workflow', 'workflow extension menus are parsed')
 assert(menu.extensionRootActivation(workflowExtensions[0]) === 'workflow', 'workflow extension roots enter their host-rendered workflow')
+const addExtension = menu.parseExtensions(JSON.stringify({
+  ...JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'extensions', 'add', 'extension.json'), 'utf8')),
+  _bundled: true,
+  _sourceDir: path.join(__dirname, '..', 'extensions', 'add')
+}))
+assert(addExtension.length === 1 && addExtension[0].workflow.items.length === 1
+  && addExtension[0].workflow.items[0].kind === 'input'
+  && addExtension[0].workflow.items[0].closeOnDispatch === true,
+'bundled Add extension exposes its detached agent creation workflow')
 const projectsNode = workflowExtensions[0].workflow.items[0]
 assert(projectsNode.label === 'Projects' && projectsNode.items.length === 2, 'workflow navigation data retains Projects and Add Project stages')
 const directoryTransition = menu.workflowDirectoryTransition(projectsNode.items[1], '/tmp/Saved Project/', {})
@@ -280,7 +511,16 @@ assert(menu.workflowClosesOnDispatch(sessionNode, promptedCommand), 'terminal wo
 assert(menu.workflowClosesOnDispatch(sessionNode, ['/usr/bin/omarchy-launch-terminal', 'codex']), 'terminal workflow detection accepts absolute launcher paths')
 assert(!menu.workflowClosesOnDispatch({ ...sessionNode, next: { id: 'next', kind: 'menu', label: 'Next', items: [] } }, promptedCommand), 'workflow commands with a next stage stay open')
 assert(!menu.workflowClosesOnDispatch(sessionNode, ['helper', 'save']), 'non-terminal workflow commands wait for successful completion')
+assert(menu.workflowClosesOnDispatch({ ...sessionNode, closeOnDispatch: true }, ['helper', 'launch']), 'explicit detached launch commands close immediately after dispatch')
 assert(!menu.workflowClosesOnDispatch({ ...sessionNode, allowEmpty: false }, []), 'pre-dispatch validation failures do not request closure')
+const backgroundStar = dynamicMenu.items[0].actions[0]
+assert(menu.workflowBackgroundEligible(backgroundStar, menu.workflowCommand(backgroundStar, '', {})), 'non-interactive action leaves are eligible for the background runner')
+assert(!menu.workflowBackgroundEligible(dynamicMenu.items[0].actions[2], menu.workflowCommand(dynamicMenu.items[0].actions[2], '', {})), 'confirmation actions remain on the staged foreground path')
+assert(!menu.workflowBackgroundEligible(dynamicMenu.items[1], menu.workflowCommand(dynamicMenu.items[1], 'value', {})), 'input actions remain on the staged foreground path')
+assert(!menu.workflowBackgroundEligible({ ...backgroundStar, next: { id: 'next' } }, ['true']), 'actions with a next stage remain on the foreground path')
+assert(menu.backgroundActionIsCurrent(3, 3, 'quicklinks', dynamicMenuExtensions[0]), 'current dynamic-provider background actions can publish completion')
+assert(!menu.backgroundActionIsCurrent(2, 3, 'quicklinks', dynamicMenuExtensions[0])
+  && !menu.backgroundActionIsCurrent(3, 3, 'other', dynamicMenuExtensions[0]), 'stale and provider-mismatched background actions cannot publish completion')
 assert(menu.normalizeWorkflow({ items: [{ id: 'bad', kind: 'directoryPicker', label: 'Bad' }] }) === null, 'directory picker stages require a declared next transition')
 assert(menu.normalizeWorkflow({ items: [
   { id: 'duplicate', kind: 'menu', label: 'First', items: [] },
@@ -425,6 +665,11 @@ assert(fileActionHints.map(hint => `${hint.label}:${hint.shortcut}`).join(',')
 const starredActionHints = menu.actionBarHints({ hasSelection: true, canStar: true, starred: true })
 assert(starredActionHints.some(hint => hint.label === 'Unstar' && hint.shortcut === 'Ctrl S'),
   'the action bar reflects the selected favorite state')
+const refreshActionHints = menu.actionBarHints({ hasSelection: true, canRefresh: true })
+assert(refreshActionHints.some(hint => hint.label === 'Refresh' && hint.shortcut === 'Ctrl R'),
+  'refreshable extension surfaces advertise Ctrl+R')
+assert(menu.compactActionBarHints(refreshActionHints.concat([{ label: 'Star', shortcut: 'Ctrl S' }])).map(hint => hint.label).join(',') === 'Open,Refresh',
+  'narrow action bars retain refresh when no action panel is available')
 const inputActionHints = menu.actionBarHints({ dmenuActive: true, dmenuInput: true })
 assert(inputActionHints.map(hint => hint.label).join(',') === 'Submit',
   'input requests only advertise their submit action')
@@ -530,17 +775,28 @@ assert(specialParentMetadata.constructor.childCount === 1, 'derived child maps a
 assert(specialParentMetadata['constructor.child'].ancestorSet.$constructor, 'derived ancestry accepts inherited object-property names')
 assert(specialParentMetadata['toString.child'].visible && specialParentMetadata['__proto__.child'].visible, 'special parent ids do not prevent metadata construction')
 
-assert(menu.searchMatchPriority({ kind: 'app', label: 'Apps', aliases: ['app', 'applications'] }, 'apps') === 90, 'exact app titles have highest item priority')
-assert(menu.searchMatchPriority({ kind: 'app', label: 'Apple Music', aliases: [] }, 'app') === 70, 'app title prefixes outrank menu shortcuts')
-assert(menu.searchMatchPriority({ kind: 'action', parent: 'apps', label: 'Work Browser', aliases: [] }, 'browser') === 60, 'whole-word titles in the Apps menu outrank exact menu shortcuts')
-assert(menu.searchMatchPriority({ kind: 'app', parent: 'apps', label: 'Chromium', aliases: ['Web Browser'] }, 'browser') === 55, 'apps matched through metadata outrank management shortcuts')
-assert(menu.searchMatchPriority({ kind: 'app', parent: 'tools', label: 'Chromium', aliases: ['Web Browser'] }, 'browser') === 55, 'desktop apps retain app ranking outside the Apps menu')
-assert(menu.searchMatchPriority({ kind: 'app', parent: 'apps', label: 'Chromium', aliases: ['Web Browser'] }, 'calculator') === 0, 'unmatched apps receive no metadata fallback priority')
-assert(menu.searchMatchPriority({ kind: 'menu', parent: 'apps', label: 'Other', aliases: ['Browser'] }, 'browser') === 40, 'submenus under Apps do not receive app ranking')
-assert(menu.searchMatchPriority({ kind: 'menu', label: 'Browser', aliases: [] }, 'browser') === 50, 'exact menu titles rank below matching apps')
-assert(menu.searchMatchPriority({ label: 'Utilities', aliases: ['app', 'applications'] }, 'app') === 40, 'exact aliases outrank menu title prefixes')
-assert(menu.searchMatchPriority({ label: 'Apps', aliases: ['app', 'applications'] }, 'ap') === 30, 'menu title prefixes outrank alias prefixes')
-assert(menu.searchMatchPriority({ label: 'Utilities', aliases: ['applications'] }, 'ap') === 10, 'alias prefixes are recognized')
+assert(menu.searchMatchPriority({ kind: 'app', label: 'Apps', aliases: ['app', 'applications'] }, 'apps') === 60, 'exact titles receive exact-title priority')
+assert(menu.searchMatchPriority({ kind: 'app', label: 'Apple Music', aliases: [] }, 'app') === 50, 'title prefixes receive title-prefix priority')
+assert(menu.searchMatchPriority({ kind: 'action', parent: 'apps', label: 'Work Browser', aliases: [] }, 'browser') === 40, 'whole title words receive title-contains priority')
+assert(menu.searchMatchPriority({ kind: 'app', label: 'Delfin', aliases: [] }, 'fi') === 40, 'title substrings share one title-contains tier below prefixes')
+assert(menu.searchMatchPriority({ kind: 'app', label: 'LibreOffice Calc', aliases: [] }, 'calc') === menu.searchMatchPriority({ kind: 'app', label: 'Omacalc', aliases: [] }, 'calc'), 'title words and in-word substrings have equal match tiers')
+assert(menu.searchMatchPriority({ kind: 'app', parent: 'apps', label: 'Chromium', aliases: ['Web Browser'] }, 'browser') === 10, 'app metadata uses the same metadata tier as other result types')
+assert(menu.searchMatchPriority({ kind: 'app', parent: 'apps', label: 'Chromium', aliases: ['Web Browser'] }, 'calculator') === 0, 'unmatched items receive no priority')
+assert(menu.searchMatchPriority({ kind: 'menu', parent: 'apps', label: 'Other', aliases: ['Browser'] }, 'browser') === 30, 'exact aliases receive exact-alias priority')
+assert(menu.searchMatchPriority({ kind: 'menu', label: 'Browser', aliases: [] }, 'browser') === 60, 'item type does not change exact-title priority')
+assert(menu.searchMatchPriority({ label: 'Apps', aliases: ['app', 'applications'] }, 'ap') === 50, 'title prefixes outrank aliases')
+assert(menu.searchMatchPriority({ label: 'Utilities', aliases: ['applications'] }, 'ap') === 20, 'alias prefixes are recognized')
+assert(menu.searchMatchPriority({ id: 'install.browser', kind: 'menu', label: 'Browser', aliases: [] }, 'browser') === 5, 'install routes receive explicit management priority')
+assert(menu.searchMatchPriority({ id: 'remove.browser', kind: 'menu', label: 'Browser', aliases: [] }, 'browser') === 5, 'remove routes receive explicit management priority')
+
+const filesApp = { id: 'apps.files', kind: 'app', parent: 'apps', label: 'Files', aliases: [] }
+const filesRoot = menu.extensionRootItem(filesExtension[0])
+for (const filesQuery of ['f', 'fi', 'fil', 'file', 'files']) {
+  assert(
+    menu.searchMatchPriority(filesApp, filesQuery) === menu.searchMatchPriority(filesRoot, filesQuery),
+    `Files app and extension have equal match tiers for ${filesQuery}`
+  )
+}
 
 assert(menu.compareSearchRows(
   { matchPriority: 0, starred: false, usageCount: 2, lastUsedAt: 100, score: 20, path: 'A' },
@@ -549,31 +805,36 @@ assert(menu.compareSearchRows(
 ) < 0, 'frequency ranks before recency and text relevance')
 
 assert(menu.compareSearchRows(
+  { matchPriority: 40, starred: false, usageCount: 1, lastUsedAt: 100, score: 0, path: 'LibreOffice Calc' },
+  { matchPriority: 40, starred: false, usageCount: 3, lastUsedAt: 200, score: 10, path: 'Omacalc' }
+) > 0, 'usage ranks Omacalc above LibreOffice Calc within the shared title-contains tier')
+
+assert(menu.compareSearchRows(
   { matchPriority: 0, starred: false, usageCount: 2, lastUsedAt: 200, score: 20, path: 'A' },
   { matchPriority: 0, starred: false, usageCount: 2, lastUsedAt: 100, score: 0, path: 'B' },
   true
 ) < 0, 'recency breaks equal frequency ties')
 
 assert(menu.compareSearchRows(
-  { matchPriority: 70, starred: false, usageCount: 0, lastUsedAt: 0, score: 20, path: 'Apple Music' },
-  { matchPriority: 40, starred: true, usageCount: 10, lastUsedAt: 200, score: 0, path: 'Apps' },
+  { matchPriority: 50, starred: false, usageCount: 0, lastUsedAt: 0, score: 20, path: 'Apple Music' },
+  { matchPriority: 30, starred: true, usageCount: 10, lastUsedAt: 200, score: 0, path: 'Apps' },
   true
 ) > 0, 'starred aliases outrank unstarred title prefixes')
 
 assert(menu.compareSearchRows(
-  { matchPriority: 95, starred: false, usageCount: 0, lastUsedAt: 0, score: -3, path: 'Exact extension' },
-  { matchPriority: 90, starred: true, usageCount: 10, lastUsedAt: 200, score: 0, path: 'Exact app' },
+  { matchPriority: 60, starred: false, usageCount: 0, lastUsedAt: 0, score: -3, path: 'Exact extension' },
+  { matchPriority: 60, starred: true, usageCount: 10, lastUsedAt: 200, score: 0, path: 'Exact app' },
   true
 ) > 0, 'starred exact apps outrank exact extension activations')
 
 assert(menu.compareSearchRows(
-  { matchPriority: 95, starred: false, usageCount: 0, lastUsedAt: 0, score: -3, path: 'Exact extension' },
-  { matchPriority: 70, starred: true, usageCount: 10, lastUsedAt: 200, score: 0, path: 'App prefix' },
+  { matchPriority: 60, starred: false, usageCount: 0, lastUsedAt: 0, score: -3, path: 'Exact extension' },
+  { matchPriority: 50, starred: true, usageCount: 10, lastUsedAt: 200, score: 0, path: 'App prefix' },
   true
 ) > 0, 'starred app title prefixes outrank exact extension activations')
 
 assert(menu.compareSearchRows(
-  { matchPriority: 60, starred: false, usageCount: 0, lastUsedAt: 0, score: 0, path: 'App word' },
+  { matchPriority: 40, starred: false, usageCount: 0, lastUsedAt: 0, score: 0, path: 'App word' },
   { matchPriority: 20, starred: true, usageCount: 10, lastUsedAt: 200, score: -3, path: 'Partial extension' },
   true
 ) > 0, 'starred weak matches outrank unstarred app title words')
@@ -599,7 +860,7 @@ const diagnosticRow = {
   score: -3,
   path: 'Unavailable extension'
 }
-const cappedRows = menu.rankSearchRows(crowdedRows, [diagnosticRow], true, 100)
+const cappedRows = menu.rankSearchRows(crowdedRows, [diagnosticRow], 100)
 assert(cappedRows.length === 100, 'ranked search rows respect the result cap')
 assert(cappedRows[0].itemId === 'row-0', 'highest ordinary result remains first after capping')
 assert(cappedRows[98].itemId === 'row-98', 'diagnostics reserve space inside the result cap')
@@ -620,7 +881,7 @@ for (let diagnosticIndex = 0; diagnosticIndex < 4; diagnosticIndex++) {
 const saturatedRows = menu.rankSearchRows([
   { itemId: 'live-result', matchPriority: 110, starred: false, usageCount: 0, lastUsedAt: 0, score: -1, path: 'Live result' },
   { itemId: 'ordinary-result', matchPriority: 0, starred: false, usageCount: 0, lastUsedAt: 0, score: 0, path: 'Ordinary result' }
-], saturatedDiagnostics, true, 3)
+], saturatedDiagnostics, 3)
 assert(saturatedRows.length === 3, 'saturated diagnostics still respect the result cap')
 assert(saturatedRows[0].itemId === 'live-result', 'saturated diagnostics preserve the highest-ranked actionable result')
 assert(saturatedRows.slice(1).every(row => row.itemId.indexOf('diagnostic-') === 0), 'remaining saturated slots are reserved for diagnostics')
@@ -628,17 +889,17 @@ assert(saturatedRows.slice(1).every(row => row.itemId.indexOf('diagnostic-') ===
 const assembledRanking = menu.rankSearchRows([
   { itemId: 'starred-favorite', matchPriority: 30, starred: true, usageCount: 0, lastUsedAt: 0, score: 10, path: 'Starred favorite' },
   { itemId: 'partial-extension', matchPriority: 20, starred: false, usageCount: 0, lastUsedAt: 0, score: -3, path: 'Partial extension' },
-  { itemId: 'exact-app', matchPriority: 90, starred: false, usageCount: 0, lastUsedAt: 0, score: 0, path: 'Exact app' },
-  { itemId: 'exact-extension', matchPriority: 95, starred: false, usageCount: 0, lastUsedAt: 0, score: -3, path: 'Exact extension' },
+  { itemId: 'exact-app', matchPriority: 60, starred: false, usageCount: 1, lastUsedAt: 100, score: 0, path: 'Exact app' },
+  { itemId: 'exact-extension', matchPriority: 60, starred: false, usageCount: 2, lastUsedAt: 200, score: -3, path: 'Exact extension' },
   { itemId: 'live-result', matchPriority: 110, starred: false, usageCount: 0, lastUsedAt: 0, score: -1, path: 'Live result' }
-], [], true, 100)
+], [], 100)
 assert(assembledRanking.map(row => row.itemId).join(',') === 'starred-favorite,live-result,exact-extension,exact-app,partial-extension', 'assembled rows rank starred matches before extension and app priority tiers')
 
 assert(menu.compareSearchRows(
   { matchPriority: 0, starred: false, usageCount: 10, lastUsedAt: 200, score: 20, path: 'A' },
   { matchPriority: 0, starred: false, usageCount: 0, lastUsedAt: 0, score: 0, path: 'B' },
   false
-) > 0, 'queries shorter than three characters ignore usage history')
+) < 0, 'usage breaks match-tier ties even for short queries')
 
 const missingWtype = menu.parseExtensions(JSON.stringify([{
   schemaVersion: 1, id: 'omalaunch.emoji', mode: 'emoji', label: 'Emoji', prefixes: ['emoji'],
@@ -1162,10 +1423,15 @@ const configuredProviderCatalog = menu.parseExtensionCatalog(JSON.stringify({
   extensions: [
     { schemaVersion: 1, id: 'default-files', capability: 'files', mode: 'files', label: 'Default', prefixes: ['default'], command: ['true'], _bundled: true },
     { schemaVersion: 1, id: 'chosen-files', capability: 'files', mode: 'files', label: 'Chosen', prefixes: ['chosen'], command: ['true'], priority: -10 }
-  ], providerPreferences: { files: 'chosen-files' }, capabilityConfig: { files: { includeGitIgnored: true } }
+  ], providerPreferences: { files: 'chosen-files' }, omalaunchConfig: { version: 1, menuItemFontClass: 'title', menuItemFontSize: 14 },
+  providerConfig: { 'default-files': { includeGitIgnored: true }, 'chosen-files': { includeGitIgnored: false } }
 }))
-assert(configuredProviderCatalog.extensions[0].id === 'chosen-files' && configuredProviderCatalog.extensions[0].config.includeGitIgnored === true,
-  'provider configuration selects an available id and capability configuration follows capability identity')
+assert(configuredProviderCatalog.extensions[0].id === 'chosen-files' && configuredProviderCatalog.extensions[0].config.includeGitIgnored === false,
+  'provider configuration selects an available id and configuration follows provider identity')
+assert(configuredProviderCatalog.omalaunchConfig.menuItemFontClass === 'title'
+  && configuredProviderCatalog.omalaunchConfig.menuItemFontSize === 14,
+  'validated core launcher settings pass through the extension catalog')
+
 // ---- switching a capability off from the Extensions row ----
 
 const rowExtensions = [

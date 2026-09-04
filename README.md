@@ -54,6 +54,7 @@ This workaround can be removed once Omarchy supports setting a widget’s sectio
 - Look up current times and convert times across DST-aware timezones
 - Search a grid of emoji and paste one straight into the focused application
 - Browse, search, and paste clipboard history with a detail pane
+- Search with Google, DuckDuckGo, Bing, Brave Search, or Ecosia
 - Accept dmenu-style select and input requests
 - Load extensions contributed by enabled Omarchy plugins, or dropped into
   `~/.config/omarchy/omalaunch/extensions.d/` without a plugin around them
@@ -61,7 +62,7 @@ This workaround can be removed once Omarchy supports setting a widget’s sectio
 
 ## Starred favorites
 
-Star frequently used applications, commands, files, directories, and extension shortcuts on the launcher’s starting view. Matching starred items rank above unstarred search results, and starred files and directories are searchable by name or path.
+Star frequently used applications, commands, files, directories, and extension shortcuts on the launcher’s starting view. Matching starred items rank above unstarred search results, and starred files and directories are searchable by name or path-component prefix. Search then ranks by text-match quality, usage count, recent use, and a stable fallback; result type does not change the text-match tier.
 
 ![Starred favorites in Omalaunch](assets/starred-favorites.png)
 
@@ -114,6 +115,10 @@ time seattle
 time 9am winnipeg to tokyo
 time 2026-11-15 8pm new york to london
 ```
+
+## Web Search
+
+Open **Web Search**, select a search engine, enter a query, and press Enter. Omalaunch opens the encoded search in your default browser. Each engine can be added to or removed from global search while it remains available in the Web Search menu. Press Ctrl+S to star an engine on the launcher's starting view. Add, replace, or remove engines in `~/.config/omarchy/omalaunch/extensions/omalaunch.web-search.jsonc`; see [PROVIDER-CONFIGURATION.md](PROVIDER-CONFIGURATION.md).
 
 ## Files
 
@@ -192,9 +197,9 @@ executable named `provider` in the same directory can generate entries
 instead. An `action` extension runs its command straight from the launcher.
 See [EXTENSIONS.md](EXTENSIONS.md).
 
-Open the fixed top-level **Extensions** directory to find every active bundled and external extension, including Calculator, Currency conversion, Emoji, Files, Timezone, and installed workflow integrations such as Codex. Star an extension with Ctrl+S to add the same shortcut to the starting view; it remains in **Extensions**, where starred shortcuts sort first and all others sort alphabetically. The directory itself cannot be starred. Global search finds extension shortcuts whether or not they are starred.
+Open the fixed top-level **Extensions** directory to find every active bundled and external extension, including Calculator, Currency conversion, Emoji, Files, Timezone, Web Search, and installed workflow integrations such as Codex. Select **Add Extension** to create an extension with your default coding agent. Omalaunch creates a minimal extension plugin under `~/.config/omarchy/plugins/<username>.<extension-slug>/` by default, where Omarchy discovers it. Set `extensionDevelopmentDirectory` in `~/.config/omarchy/omalaunch/config.jsonc` to use another location. Star an extension with Ctrl+S to add the same shortcut to the starting view; it remains in **Extensions**, where starred shortcuts sort first and all others sort alphabetically. The directory itself cannot be starred. Global search finds extension shortcuts whether or not they are starred.
 
-Shortcut activation follows the extension type: Files opens its browser, Emoji opens its grid, Timezone prepares its prefix, Calculator and Currency conversion open focused query input, and workflow extensions open their workflow. A replacement provider keeps the same shortcut and favorite because identity is based on stable capability rather than provider id. Missing dependencies are shown on the shortcut without affecting unrelated extensions.
+Shortcut activation follows the extension type: Files opens its browser, Emoji opens its grid, Timezone prepares its prefix, Calculator and Currency conversion open focused query input, and workflow extensions open their workflow. A replacement provider supplies the capability shortcut, but it does not inherit the original provider's favorite because stored ownership uses the exact provider ID. Missing dependencies are shown on the shortcut without affecting unrelated extensions.
 
 Omalaunch includes replaceable bundled extensions. An external extension can be a standard Omarchy plugin, using the same installation, enable/disable, update, and removal workflow as any other plugin — or, on this fork, a definition you drop in yourself:
 
@@ -243,12 +248,24 @@ Omalaunch core settings live in the dedicated `~/.config/omarchy/omalaunch/confi
 ```jsonc
 {
   "version": 1,
+  // Theme class for primary menu item text.
+  "menuItemFontClass": "title",
+  // Optional explicit override. Valid range: 8–24 pixels.
+  // "menuItemFontSize": 15,
   "capabilities": {
     "files": { "provider": "omalaunch.files" },
     "emoji": { "enabled": false },
   },
 }
 ```
+
+`menuItemFontClass` accepts `caption`, `bodySmall`, `body`, `subtitle`, `title`, `heading`, `display`, or `displayLarge`. It defaults to `title`. If `menuItemFontSize` is set, its explicit pixel size takes priority over the theme class.
+
+Press `Ctrl+,` in Omalaunch to open **Omalaunch Settings**. The **Font Size** menu provides Compact, Small, Default, Large, and Extra Large theme-aware presets. Selecting a preset removes an explicit `menuItemFontSize` override so the chosen theme class can take effect.
+
+Bundled provider settings use provider-ID JSONC files under the configuration directory. Interactive data uses provider-ID JSON state under `${XDG_STATE_HOME:-~/.local/state}`. Replacement providers do not inherit either namespace. See [PROVIDER-CONFIGURATION.md](PROVIDER-CONFIGURATION.md) for the separate configuration and state schemas, supported versions, and migration rules. Quicklinks does not import external or unreleased data.
+
+If a preferred provider is missing or unavailable, Omalaunch reports a diagnostic and uses its normal provider selection rules.
 
 ### Turning an extension off
 
@@ -259,17 +276,6 @@ The quickest way to turn one off is from the launcher: open **Extensions**, sele
 `config.jsonc` can do the same with `"enabled": false`, which also removes the row from **Extensions** entirely. A capability written out there is pinned: its row reads **Disabled in configuration** and Delete leaves it alone, so a configured value is never overridden by a keypress.
 
 The capability names are `calculator`, `currency`, `emoji`, `files`, and `timezone`. External extensions can be switched off the same way; disabling leaves the plugin installed, and `omarchy plugin remove <id>` removes it entirely.
-
-Each capability has an independent configuration file. For example, include files ignored by Git in Files browsing and search with `extensions/files.jsonc`:
-
-```jsonc
-{
-  "version": 1,
-  "includeGitIgnored": true,
-}
-```
-
-If a preferred provider is missing or unavailable, Omalaunch reports a diagnostic and uses its normal provider selection rules.
 
 ## Updating
 

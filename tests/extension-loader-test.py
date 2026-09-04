@@ -143,14 +143,15 @@ elif mode == 'integer-overflow':
     enabled_file = base / "enabled.json"
     enabled_file.write_text(json.dumps([{"id": "example.dynamic", "enabled": True}]), encoding="utf-8")
     write_executable(bin_dir / "omarchy", f"#!/bin/sh\ncat {enabled_file}\n")
-    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+    env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}",
+               XDG_STATE_HOME=str(home / ".local" / "state"))
     omarchy_root = base / "omarchy"
     omarchy_root.mkdir()
 
     config_root = home / ".config" / "omarchy" / "omalaunch"
     (config_root / "extensions").mkdir(parents=True)
-    (config_root / "config.jsonc").write_text('{\n// selection\n"version": 1, "capabilities": {"files": {"provider": "chosen",},},\n}')
-    (config_root / "extensions" / "files.jsonc").write_text('{"version": 1, "includeGitIgnored": true,}')
+    (config_root / "config.jsonc").write_text('{\n// selection\n"version": 1, "menuItemFontClass": "title", "menuItemFontSize": 14, "extensionDevelopmentDirectory": "~/Code/extensions", "capabilities": {"files": {"provider": "chosen",},},\n}')
+    (config_root / "extensions" / "omalaunch.files.jsonc").write_text('{"version": 1, "includeGitIgnored": true,}')
 
     catalog = run_loader(plugin_root, omarchy_root, home, env)
     check(catalog["providerPreferences"] == {"files": "chosen"}
@@ -158,9 +159,12 @@ elif mode == 'integer-overflow':
               "version": 1,
               "capabilities": {"files": {"provider": "chosen"}},
               "launcher": {},
+              "menuItemFontClass": "title",
+              "menuItemFontSize": 14,
+              "extensionDevelopmentDirectory": "~/Code/extensions",
           }
-          and catalog["capabilityConfig"] == {"files": {"includeGitIgnored": True}},
-          "bounded JSONC loads core and capability configuration")
+          and catalog["providerConfig"]["omalaunch.files"] == {"version": 1, "includeGitIgnored": True, "favorites": []},
+          "bounded JSONC loads core and provider configuration")
     check(catalog["disabledCapabilities"] == [],
           "no capability is disabled without being asked for")
 
@@ -230,6 +234,33 @@ elif mode == 'integer-overflow':
           "bundled, static, and successful dynamic definitions coexist")
     check(not marker.exists() and next(item for item in catalog["extensions"] if item.get("id") == "argument")["label"] == hostile_argument,
           "provider arguments are passed literally without shell interpretation")
+
+    for boundary in (8, 24):
+        (config_root / "config.jsonc").write_text(json.dumps({"version": 1, "menuItemFontSize": boundary}))
+        boundary_catalog = run_loader(plugin_root, omarchy_root, home, env)
+        check(boundary_catalog["omalaunchConfig"].get("menuItemFontSize") == boundary,
+              f"core menu font size boundary {boundary} is accepted")
+    for invalid_size in (7, 25, True, 12.5):
+        (config_root / "config.jsonc").write_text(json.dumps({
+            "version": 1,
+            "menuItemFontSize": invalid_size,
+            "capabilities": {"files": {"provider": "chosen"}},
+        }))
+        invalid_font_catalog = run_loader(plugin_root, omarchy_root, home, env)
+        check(invalid_font_catalog["omalaunchConfig"] == {}
+              and invalid_font_catalog["providerPreferences"] == {}
+              and "menuItemFontSize must be an integer from 8 to 24" in "\n".join(invalid_font_catalog["diagnostics"]),
+              f"invalid core menu font size {invalid_size!r} is rejected atomically")
+    (config_root / "config.jsonc").write_text('{"version":1,"menuItemFontClass":"large"}')
+    invalid_font_class_catalog = run_loader(plugin_root, omarchy_root, home, env)
+    check(invalid_font_class_catalog["omalaunchConfig"] == {}
+          and "menuItemFontClass must be a supported Style.font class" in "\n".join(invalid_font_class_catalog["diagnostics"]),
+          "invalid core menu font classes are rejected")
+    (config_root / "config.jsonc").write_text('{"version":1,"extensionDevelopmentDirectory":""}')
+    invalid_development_directory_catalog = run_loader(plugin_root, omarchy_root, home, env)
+    check(invalid_development_directory_catalog["omalaunchConfig"] == {}
+          and "extensionDevelopmentDirectory must be a nonempty path" in "\n".join(invalid_development_directory_catalog["diagnostics"]),
+          "invalid extension development directories are rejected")
     check("emitted invalid JSON" in messages, "malformed provider output produces a diagnostic")
     check("exited with code 7" in messages and "provider setup failed" in messages,
           "provider failures include exit status and bounded stderr")
