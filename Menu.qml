@@ -1426,8 +1426,13 @@ Item {
     root.rebuildDisplay()
   }
 
-  function leaveWorkflow() {
-    if (root.routedExtensionSession) {
+  // internalRefresh is set when the launcher is rebuilding the same surface
+  // rather than the user backing out of it — a catalog reload re-entering the
+  // menu it is already showing. A routed session has no launcher behind it, so
+  // backing out closes; rebuilding must not, or the reload lands on a session
+  // it just tore down.
+  function leaveWorkflow(internalRefresh) {
+    if (root.routedExtensionSession && internalRefresh !== true) {
       root.cancel()
       return
     }
@@ -4218,7 +4223,7 @@ Item {
         if (root.workflowActive) {
           var refreshedWorkflow = root.extensionByCapability(workflowCapability) || root.extensionById(workflowId)
           if (refreshedWorkflow && refreshedWorkflow.available && refreshedWorkflow.mode === "menu") {
-            root.leaveWorkflow()
+            root.leaveWorkflow(true)
             root.enterDynamicMenu(refreshedWorkflow)
           } else {
             var rebound = MenuModel.rebindWorkflow(refreshedWorkflow, oldWorkflowStack, oldWorkflowNode)
