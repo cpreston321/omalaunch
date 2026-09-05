@@ -233,6 +233,29 @@ Item {
   property string fileCopyFeedbackPath: ""
   property string fileCopyFeedback: ""
   property bool actionPanelActive: false
+
+  // Ctrl+K actions float over the surface they were summoned from instead of
+  // replacing it, so the row they belong to stays on screen and selected.
+  // The actions are held here rather than pushed onto the workflow stack.
+  property bool actionPopoverOpen: false
+  property var actionPopoverActions: []
+  property string actionPopoverTitle: ""
+  property string actionPopoverFilter: ""
+  property int actionPopoverIndex: 0
+  // Set when the actions came from a global-search row, which dispatches
+  // through the extension rather than the workflow tree.
+  property var actionPopoverExtension: null
+
+  readonly property var actionPopoverRows: {
+    var needle = String(root.actionPopoverFilter).trim().toLowerCase()
+    var out = []
+    for (var i = 0; i < root.actionPopoverActions.length; i++) {
+      var candidate = root.actionPopoverActions[i]
+      if (!needle || String(candidate.label).toLowerCase().indexOf(needle) !== -1)
+        out.push(candidate)
+    }
+    return out
+  }
   property string settingsFeedback: ""
   property var actionPanelFile: null
   readonly property var selectedFileRow: root.fileBrowserActive && !root.actionPanelActive && root.cursorActive
@@ -342,6 +365,9 @@ Item {
   property color selectedBackground: Color.menu.selectedBackground
   property color selectedText: Color.menu.selectedText
   property color selectedBorder: Color.menu.selectedBorder
+  // The theme's urgent colour. There is no menu-scoped variant, so this reads
+  // the shared one: it marks a destructive action in the popover.
+  property color urgent: Color.urgent
   property var selectedBorderSpec: Border.surfaceSpec("menu", "selected-border", selectedBorder, 0)
   readonly property real rowReservedBorderLeft: Border.left(selectedBorderSpec)
   readonly property real rowReservedBorderRight: Border.right(selectedBorderSpec)
@@ -1387,22 +1413,71 @@ Item {
     if (action) root.dispatchWorkflowNode(action, "", false, true)
   }
 
+  function openActionPopover(actions, title, extension) {
+    if (!actions || actions.length === 0) return
+    root.actionPopoverActions = actions
+    root.actionPopoverTitle = String(title || "")
+    root.actionPopoverExtension = extension || null
+    root.actionPopoverFilter = ""
+    root.actionPopoverIndex = 0
+    root.actionPopoverOpen = true
+  }
+
+  function closeActionPopover() {
+    root.actionPopoverOpen = false
+    root.actionPopoverActions = []
+    root.actionPopoverTitle = ""
+    root.actionPopoverFilter = ""
+    root.actionPopoverIndex = 0
+    root.actionPopoverExtension = null
+  }
+
+  // Only "danger" diverges today; the rest read as ordinary actions and
+  // colouring them would dilute the one signal that matters.
+  function actionToneColor(tone) {
+    return tone === "danger" ? root.urgent : root.foreground
+  }
+
+  function moveActionPopover(delta) {
+    var total = root.actionPopoverRows.length
+    if (total === 0) return
+    root.actionPopoverIndex = (root.actionPopoverIndex + delta + total) % total
+  }
+
+  // Mirrors activateWorkflowChild, but takes the node directly: the popover
+  // never navigated into a menu, so there is no index to look up.
+  function activateActionPopover() {
+    var rows = root.actionPopoverRows
+    if (root.actionPopoverIndex < 0 || root.actionPopoverIndex >= rows.length) return
+    var node = rows[root.actionPopoverIndex]
+    var extension = root.actionPopoverExtension
+    root.closeActionPopover()
+    if (extension) {
+      root.dispatchBackgroundAction(extension, node, "")
+      return
+    }
+    if (node.submenuCommand && node.submenuCommand.length > 0) root.enterSubmenu(node)
+    else if (node.documentCommand && node.documentCommand.length > 0) root.enterDocument(node)
+    else if (node.kind === "action") root.dispatchWorkflowNode(node, "")
+    else if (node.kind === "confirm") {
+      root.workflowConfirmNode = node
+      root.workflowConfirmOpen = true
+    } else root.showWorkflowNode(node, root.workflowContext, true)
+  }
+
   function openWorkflowActions() {
     if (!root.workflowActive || root.fileBrowserActive || !root.workflowNode) return
     if (root.documentActive) {
       var documentActions = root.activeDocument && root.activeDocument.actions ? root.activeDocument.actions : []
-      if (documentActions.length === 0) return
-      root.showWorkflowNode({ id: root.workflowNode.id + ".actions", kind: "menu",
-        label: root.activeDocument.title, description: "Actions", items: documentActions },
-        root.workflowContext, true)
+      root.openActionPopover(documentActions,
+        root.activeDocument ? root.activeDocument.title : "", null)
       return
     }
     if (root.workflowNode.kind !== "menu" || !root.cursorActive || root.selectedIndex < 0
         || root.selectedIndex >= root.workflowNode.items.length) return
     var child = root.selectedWorkflowNode
-    if (!child || !child.actions || child.actions.length === 0) return
-    root.showWorkflowNode({ id: child.id + ".actions", kind: "menu", label: child.label,
-      description: "Actions", items: child.actions }, root.workflowContext, true)
+    if (!child || !child.actions) return
+    root.openActionPopover(child.actions, child.label, null)
   }
 
   function toggleSelectedDynamicStar() {
@@ -1419,15 +1494,7 @@ Item {
     if (!entry || !entry.node.actions || entry.node.actions.length === 0) return
     var extension = root.extensionByCapability(entry.capability)
     if (!extension || !extension.available || extension.id !== entry.extensionId) return
-    root.workflowActive = true
-    root.workflowExtension = extension
-    root.workflowContext = ({ extensionDir: extension.sourceDir })
-    root.workflowStack = []
-    root.workflowNode = { id: entry.node.id + ".actions", kind: "menu", label: entry.node.label,
-      description: "Actions", items: entry.node.actions }
-    root.filterText = ""
-    root.selectedIndex = 0
-    root.rebuildDisplay()
+    root.openActionPopover(entry.node.actions, entry.node.label, extension)
   }
 
   function utf8ByteLength(value) {
@@ -4880,6 +4947,44 @@ Item {
 
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
+          // The popover is modal over its surface: it owns navigation, typing
+          // and Enter while open, and Escape dismisses it without unwinding
+          // the workflow stack, so the row behind stays selected.
+          if (root.actionPopoverOpen && !root.workflowConfirmOpen && !root.deleteConfirmOpen
+              && !root.dependencyConfirmOpen && !root.capabilityConfirmOpen) {
+            if (event.key === Qt.Key_Escape
+                || (event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier))) {
+              root.closeActionPopover()
+              event.accepted = true
+              return
+            }
+            if (event.key === Qt.Key_Up) { root.moveActionPopover(-1); event.accepted = true; return }
+            if (event.key === Qt.Key_Down) { root.moveActionPopover(1); event.accepted = true; return }
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+              root.activateActionPopover()
+              event.accepted = true
+              return
+            }
+            // editsFilter covers Backspace and Ctrl+U only; printable keys are
+            // appended separately, the same split the other surfaces use.
+            if (Util.editsFilter(event, root.actionPopoverFilter)) {
+              root.actionPopoverFilter = Util.editedFilter(event, root.actionPopoverFilter)
+              root.actionPopoverIndex = 0
+              event.accepted = true
+              return
+            }
+            if (event.text && event.text.length === 1
+                && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127
+                && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))) {
+              root.actionPopoverFilter = root.actionPopoverFilter + event.text
+              root.actionPopoverIndex = 0
+              event.accepted = true
+              return
+            }
+            // Nothing else reaches the surface behind while the popover is up.
+            event.accepted = true
+            return
+          }
           if (root.workflowConfirmOpen) {
             if (workflowConfirm.handleKey(event)) event.accepted = true
             return
@@ -6284,6 +6389,194 @@ Item {
           }
         }
       }
+
+      // ------------------------------------------------- action popover
+      //
+      // A Ctrl+K action list is a synthetic workflow node, so navigation,
+      // filtering, selection and activation already work. Only the
+      // presentation changes: instead of replacing the surface it belongs to,
+      // the node floats over it, anchored above the action bar the way
+      // Raycast puts actions in the corner they were summoned from.
+      Item {
+        id: actionPopoverLayer
+        anchors.fill: parent
+        visible: root.actionPopoverOpen
+        z: 40
+
+        Rectangle {
+          anchors.fill: parent
+          radius: root.cornerRadius
+          color: Util.alpha(root.background, 0.62)
+        }
+
+        // Clicking away goes back, matching Escape.
+        MouseArea { anchors.fill: parent; onClicked: root.closeActionPopover() }
+
+        Rectangle {
+          id: actionPopover
+          width: Math.min(Style.space(360), actionPopoverLayer.width - Style.space(32))
+          // Sized from its content. The list is capped against the layer, not
+          // against this panel, so height does not depend on itself.
+          readonly property int pad: root.contentSpacing
+          readonly property int maxListHeight: Math.max(Style.space(90),
+            actionPopoverLayer.height - root.actionBarHeight - Style.space(130))
+          height: popoverContent.implicitHeight + pad * 2
+          anchors.right: parent.right
+          anchors.rightMargin: card.contentRightInset
+          anchors.bottom: parent.bottom
+          anchors.bottomMargin: root.actionBarHeight + root.actionBarBottomPadding + Style.space(6)
+          radius: root.cornerRadius
+          color: Qt.lighter(root.background, 1.3)
+          border.width: Style.spacing.hairline
+          border.color: Util.alpha(root.foreground, 0.22)
+
+          MouseArea { anchors.fill: parent; onClicked: {} }
+
+          Column {
+            id: popoverContent
+            x: actionPopover.pad
+            y: actionPopover.pad
+            width: actionPopover.width - actionPopover.pad * 2
+            spacing: root.contentSpacing
+
+            Item {
+              width: parent.width
+              height: popoverTitle.implicitHeight
+
+              Text {
+                id: popoverTitle
+                anchors.left: parent.left
+                anchors.right: popoverCount.left
+                anchors.rightMargin: Style.space(8)
+                elide: Text.ElideRight
+                text: root.actionPopoverTitle
+                color: root.foreground
+                opacity: 0.55
+                font.family: root.fontFamily
+                font.pixelSize: root.menuSecondaryFontSize
+                textFormat: Text.PlainText
+              }
+
+              Text {
+                id: popoverCount
+                anchors.right: parent.right
+                anchors.baseline: popoverTitle.baseline
+                text: root.actionPopoverRows.length + (root.actionPopoverRows.length === 1 ? " action" : " actions")
+                color: root.foreground
+                opacity: 0.35
+                font.family: root.fontFamily
+                font.pixelSize: root.menuCaptionFontSize
+                textFormat: Text.PlainText
+              }
+            }
+
+            // Not a real input: keystrokes already reach keyCatcher and run
+            // through setFilter, so this shows the same filter the rest of the
+            // launcher uses without introducing a second focus owner.
+            Rectangle {
+              width: parent.width
+              height: Math.max(Style.space(26), root.menuItemFontSize + Style.space(12))
+              radius: Math.min(root.cornerRadius, Style.space(6))
+              color: Util.alpha(root.foreground, 0.07)
+
+              Text {
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(9)
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(9)
+                anchors.verticalCenter: parent.verticalCenter
+                elide: Text.ElideRight
+                text: root.actionPopoverFilter || "Search actions…"
+                color: root.foreground
+                opacity: root.actionPopoverFilter ? 1 : 0.45
+                font.family: root.fontFamily
+                font.pixelSize: root.menuItemFontSize
+                textFormat: Text.PlainText
+              }
+            }
+
+            ListView {
+              id: actionPopoverList
+              width: parent.width
+              height: Math.min(contentHeight, actionPopover.maxListHeight)
+              clip: true
+              model: root.actionPopoverRows
+              currentIndex: root.actionPopoverIndex
+              boundsBehavior: Flickable.StopAtBounds
+              spacing: Style.space(2)
+              // The popover keeps its own cursor, so revealCursor (which drives
+              // resultList) is untouched by any of this.
+              onCurrentIndexChanged: positionViewAtIndex(currentIndex, ListView.Contain)
+
+              delegate: Rectangle {
+                id: popoverRow
+                readonly property bool current: root.actionPopoverIndex === index
+                readonly property bool danger: modelData.tone === "danger"
+                // A destructive action keeps its colour when selected; the
+                // usual accent would be the one place the warning disappears.
+                readonly property color tint: popoverRow.danger
+                  ? root.urgent
+                  : (popoverRow.current ? root.selectedText : root.foreground)
+
+                width: actionPopoverList.width
+                height: Math.max(Style.space(30), root.menuItemFontSize + Style.space(16))
+                radius: Math.min(root.cornerRadius, Style.space(6))
+                color: popoverRow.current
+                  ? (popoverRow.danger ? Util.alpha(root.urgent, 0.16) : root.selectedBackground)
+                  : (popoverRowHover.containsMouse ? Util.alpha(root.foreground, 0.06) : "transparent")
+
+                // Fixed icon column so labels line up whether or not an action
+                // carries an icon.
+                Item {
+                  id: popoverRowIcon
+                  anchors.left: parent.left
+                  anchors.leftMargin: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: root.menuItemFontSize + Style.space(4)
+                  height: width
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: modelData.icon || ""
+                    color: popoverRow.tint
+                    opacity: popoverRow.danger || popoverRow.current ? 1 : 0.75
+                    font.family: modelData.iconFont ? modelData.iconFont : root.fontFamily
+                    font.pixelSize: root.menuItemFontSize
+                    textFormat: Text.PlainText
+                  }
+                }
+
+                Text {
+                  anchors.left: popoverRowIcon.right
+                  anchors.leftMargin: Style.space(10)
+                  anchors.right: parent.right
+                  anchors.rightMargin: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                  elide: Text.ElideRight
+                  text: modelData.label
+                  color: popoverRow.tint
+                  font.family: root.fontFamily
+                  font.pixelSize: root.menuItemFontSize
+                  textFormat: Text.PlainText
+                }
+
+                MouseArea {
+                  id: popoverRowHover
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onEntered: root.actionPopoverIndex = index
+                  onClicked: {
+                    root.actionPopoverIndex = index
+                    root.activateActionPopover()
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+
     }
   }
 }
