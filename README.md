@@ -6,13 +6,15 @@ Omalaunch keeps the familiar Omarchy command tree while adding fast global searc
 
 ![Omalaunch demo](assets/omalaunch-demo.gif)
 
-> This is a fork of [daniellemky/omalaunch](https://github.com/daniellemky/omalaunch).
-> It adds user-installed extensions — definitions dropped into
-> `~/.config/omarchy/omalaunch/extensions.d/` with no plugin around them — and
-> an `action` extension mode for entries that run a command straight from the
-> launcher. Both are documented in [EXTENSIONS.md](EXTENSIONS.md). The
-> installation commands below point at this fork; use the upstream URL if you
-> want the original.
+> This is a fork of [daniellemky/omalaunch](https://github.com/daniellemky/omalaunch)
+> maintained by [cpreston321](https://github.com/cpreston321), tracking upstream
+> and adding features on top of it — user-installed extensions dropped into
+> `~/.config/omarchy/omalaunch/extensions.d/` with no plugin around them, an
+> `action` extension mode, clipboard history, the emoji picker, a fixed
+> launcher size, and switching a capability off from the launcher. See
+> [Additions in this fork](#additions-in-this-fork). Extension authoring is
+> documented in [EXTENSIONS.md](EXTENSIONS.md). The installation commands below
+> point at this fork; use the upstream URL if you want the original.
 
 ## Installation
 
@@ -54,10 +56,12 @@ This workaround can be removed once Omarchy supports setting a widget’s sectio
 - Look up current times and convert times across DST-aware timezones
 - Search a grid of emoji and paste one straight into the focused application
 - Browse, search, and paste clipboard history with a detail pane
+- Save, open, star, and edit web links with Quicklinks
 - Search with Google, DuckDuckGo, Bing, Brave Search, or Ecosia
 - Accept dmenu-style select and input requests
 - Load extensions contributed by enabled Omarchy plugins, or dropped into
   `~/.config/omarchy/omalaunch/extensions.d/` without a plugin around them
+- Scaffold a new extension with your default coding agent from **Add Extension**
 - Launch agent prompts such as Pi and Codex through optional extensions
 
 ## Starred favorites
@@ -116,9 +120,31 @@ time 9am winnipeg to tokyo
 time 2026-11-15 8pm new york to london
 ```
 
+![Looking up the time in another timezone in Omalaunch](assets/timezones.png)
+
 ## Web Search
 
 Open **Web Search**, select a search engine, enter a query, and press Enter. Omalaunch opens the encoded search in your default browser. Each engine can be added to or removed from global search while it remains available in the Web Search menu. Press Ctrl+S to star an engine on the launcher's starting view. Add, replace, or remove engines in `~/.config/omarchy/omalaunch/extensions/omalaunch.web-search.jsonc`; see [PROVIDER-CONFIGURATION.md](PROVIDER-CONFIGURATION.md).
+
+![Choosing a search engine in Omalaunch](assets/web-search.png)
+
+## Quicklinks
+
+Save web links and open them from the launcher. **Quicklinks** lists everything
+you have saved; typing part of a name finds it, and Enter opens it in your
+default browser. The `links` prefix jumps straight there.
+
+**Add Quicklink…** asks for a URL and then a name. Ctrl+K on a saved link opens
+its actions: star it so it appears on the starting view, copy the URL, edit the
+name or the URL, open it, or delete it. Starred links rank first, and saved
+links are searchable from the launcher's global search as well as inside the
+extension.
+
+Links are stored per provider, so a replacement Quicklinks provider keeps its
+own set. `rankByUsage` is on by default and orders the list by how often you
+open each link; see [PROVIDER-CONFIGURATION.md](PROVIDER-CONFIGURATION.md).
+
+![Saved links in Omalaunch](assets/quicklinks.png)
 
 ## Files
 
@@ -149,11 +175,58 @@ o.bind("CTRL + ALT + SPACE", "Emoji", "omarchy-shell shell summon quantumfire.om
 
 Any extension capability works the same way — `files`, `calculator`, and so on.
 
+![Searching the emoji grid in Omalaunch](assets/emoji.png)
+
 ## Clipboard history
 
 Type `clip` and activate **Clipboard History** to browse everything Omarchy's clipboard capture has recorded. The list shows an icon and a one-line title; the pane beside it shows the entry in full along with its type, size, and origin. Press Enter to paste it into the focused application, or Ctrl+C to copy it without pasting. Searching is a plain substring match, so a half-remembered fragment finds what you want.
 
 Omalaunch reads the history and never writes it — Omarchy's capture owns that file — and the file is watched, so anything you copy elsewhere appears without reopening the launcher. Text entries are pasted by their index in the history rather than by value, so clipboard contents never appear on a command line where a process listing could expose them.
+
+## Layouts
+
+Save a window arrangement and bring it back later. **Layouts** lists everything
+you have saved; Enter applies one, and Ctrl+K opens its actions — apply the
+other way, overwrite it with the current windows, edit it, rename it, or delete
+it.
+
+![Saved layouts in Omalaunch](assets/layouts.png)
+
+There are two ways to make one. **Save current layout…** captures the windows
+exactly as they sit right now. **Design a new layout…** opens a canvas instead,
+where the tiles are the leaves of a split tree: drag a boundary and every tile
+sharing it moves, so the tiles always partition the screen and can never overlap.
+Drag one tile onto another to swap their applications, split a tile horizontally
+or vertically, and give each one an app from a searchable list.
+
+![Designing a layout](assets/layout-designer.png)
+
+The canvas mirrors the real screen, gaps included. It reads Hyprland's own
+`gaps_in`, `gaps_out`, and `border_size`, insets each tile the way Hyprland
+would, and leaves the bar's reserved strip out of the usable area — so what the
+canvas shows is where the windows land. It follows whichever monitor has focus
+and stores the design as fractions, so a layout still applies correctly at a
+different resolution.
+
+A layout applies in one of two modes, chosen with the **Apply as** toggle:
+
+- **Tiles** rebuilds the arrangement as real Hyprland tiles by walking the split
+  tree and driving dwindle's own `preselect`. The windows snap, reflow, and
+  resize each other exactly like windows opened with Super+Return. It opens
+  fresh windows and moves anything else off the workspace first.
+- **Exact** places the windows at exactly the designed pixels and reuses what is
+  already open. Pixel-perfect, but the windows float, so they do not snap.
+
+Bind a key straight to it like any other extension:
+
+```lua
+o.bind("SUPER + ALT + L", "Window layouts", "omarchy-shell shell summon quantumfire.omalaunch '{\"extension\":\"layouts\"}'")
+```
+
+> Layouts is not bundled with Omalaunch. It is a drop-in extension in
+> `~/.config/omarchy/omalaunch/extensions.d/layouts/` paired with an Omarchy
+> panel plugin for the designer, built on this fork's own `extensions.d` and
+> dynamic-menu support.
 
 ## Requirements
 
@@ -197,9 +270,9 @@ executable named `provider` in the same directory can generate entries
 instead. An `action` extension runs its command straight from the launcher.
 See [EXTENSIONS.md](EXTENSIONS.md).
 
-Open the fixed top-level **Extensions** directory to find every active bundled and external extension, including Calculator, Currency conversion, Emoji, Files, Timezone, Web Search, and installed workflow integrations such as Codex. Select **Add Extension** to create an extension with your default coding agent. Omalaunch creates a minimal extension plugin under `~/.config/omarchy/plugins/<username>.<extension-slug>/` by default, where Omarchy discovers it. Set `extensionDevelopmentDirectory` in `~/.config/omarchy/omalaunch/config.jsonc` to use another location. Star an extension with Ctrl+S to add the same shortcut to the starting view; it remains in **Extensions**, where starred shortcuts sort first and all others sort alphabetically. The directory itself cannot be starred. Global search finds extension shortcuts whether or not they are starred.
+Open the fixed top-level **Extensions** directory to find every active bundled and external extension. The bundled set is Add Extension, Calculator, Clipboard history, Currency conversion, Emoji, Files, Quicklinks, Timezone, and Web Search, alongside any installed workflow integrations such as Codex. Select **Add Extension** to create an extension with your default coding agent. Omalaunch creates a minimal extension plugin under `~/.config/omarchy/plugins/<username>.<extension-slug>/` by default, where Omarchy discovers it. Set `extensionDevelopmentDirectory` in `~/.config/omarchy/omalaunch/config.jsonc` to use another location. Star an extension with Ctrl+S to add the same shortcut to the starting view; it remains in **Extensions**, where starred shortcuts sort first and all others sort alphabetically. The directory itself cannot be starred. Global search finds extension shortcuts whether or not they are starred.
 
-Shortcut activation follows the extension type: Files opens its browser, Emoji opens its grid, Timezone prepares its prefix, Calculator and Currency conversion open focused query input, and workflow extensions open their workflow. A replacement provider supplies the capability shortcut, but it does not inherit the original provider's favorite because stored ownership uses the exact provider ID. Missing dependencies are shown on the shortcut without affecting unrelated extensions.
+Shortcut activation follows the extension type: Files opens its browser, Emoji opens its grid, Clipboard history opens its list, Quicklinks and Web Search open their menus, Timezone prepares its prefix, Calculator and Currency conversion open focused query input, and workflow extensions such as Add Extension open their workflow. A replacement provider supplies the capability shortcut, but it does not inherit the original provider's favorite because stored ownership uses the exact provider ID. Missing dependencies are shown on the shortcut without affecting unrelated extensions.
 
 Omalaunch includes replaceable bundled extensions. An external extension can be a standard Omarchy plugin, using the same installation, enable/disable, update, and removal workflow as any other plugin — or, on this fork, a definition you drop in yourself:
 
@@ -269,13 +342,13 @@ If a preferred provider is missing or unavailable, Omalaunch reports a diagnosti
 
 ### Turning an extension off
 
-Bundled extensions — Calculator, Currency conversion, Emoji, Files, and Timezone — ship enabled and are not installed, so there is nothing to uninstall.
+Bundled extensions — Add Extension, Calculator, Clipboard history, Currency conversion, Emoji, Files, Quicklinks, Timezone, and Web Search — ship enabled and are not installed, so there is nothing to uninstall.
 
 The quickest way to turn one off is from the launcher: open **Extensions**, select the row, and press Delete. The row stays listed but dimmed and marked, so pressing Delete again switches it back on. Everywhere else — the starting view, search, its prefix — it disappears. This is stored in `~/.local/state/omarchy/omalaunch-capabilities.json`, next to your favorites and usage history.
 
 `config.jsonc` can do the same with `"enabled": false`, which also removes the row from **Extensions** entirely. A capability written out there is pinned: its row reads **Disabled in configuration** and Delete leaves it alone, so a configured value is never overridden by a keypress.
 
-The capability names are `calculator`, `currency`, `emoji`, `files`, and `timezone`. External extensions can be switched off the same way; disabling leaves the plugin installed, and `omarchy plugin remove <id>` removes it entirely.
+The capability names are `add-extension`, `calculator`, `clipboard`, `currency`, `emoji`, `files`, `quicklinks`, `timezone`, and `web-search`. External extensions can be switched off the same way; disabling leaves the plugin installed, and `omarchy plugin remove <id>` removes it entirely.
 
 ## Updating
 
@@ -390,9 +463,33 @@ Release maintainers should follow [`RELEASING.md`](RELEASING.md). Omarchy update
 plugins from the default branch, so `master` remains stable while version tags
 and GitHub releases provide immutable reference and rollback points.
 
+## Additions in this fork
+
+These are the features [cpreston321](https://github.com/cpreston321) has added on
+top of upstream Omalaunch:
+
+- **User-installed extensions** — drop a definition into
+  `~/.config/omarchy/omalaunch/extensions.d/` with no plugin, manifest, or
+  install step; an executable `provider` beside it can generate entries instead
+- **`action` extension mode** — an entry that runs one command straight from the
+  launcher, with nothing opening first
+- **Emoji picker** — the searchable grid, its currency signs, and recents-based
+  ranking
+- **Clipboard history** — the browsable list with a detail pane
+- **A fixed, configurable launcher size**, so the card never resizes as results
+  come and go
+- **Switching a capability off** — from its row in **Extensions** with Delete,
+  or pinned in `config.jsonc`
+- **Calculator presentation** — answers laid out as expression and value, the
+  unit spellings people actually type, and a lone amount and unit converting to
+  its counterpart
+- **[Layouts](#layouts)** — save or design window arrangements and reapply them,
+  either as real Hyprland tiles or at exact pixels (a companion extension, not
+  bundled)
+
 ## Acknowledgements
 
-Omalaunch began as a customization of Omarchy's built-in menu and continues to consume Omarchy's standard menu definitions and shell APIs.
+Omalaunch began as a customization of Omarchy's built-in menu and continues to consume Omarchy's standard menu definitions and shell APIs. Upstream Omalaunch is by [Daniel Lemky](https://github.com/daniellemky); this fork tracks it and is maintained by [cpreston321](https://github.com/cpreston321).
 
 ## License
 

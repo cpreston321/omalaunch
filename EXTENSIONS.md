@@ -701,7 +701,7 @@ The highest-priority matching live-query extension runs. Live queries debounce f
 - `schemaVersion`: Extension format version; currently `1`.
 - `id`: Stable, unique extension identifier.
 - `capability`: Stable behavior being supplied or replaced; defaults to `id`.
-- `mode`: `prefix`, `query`, `files`, `workflow`, `emoji`, or `menu`; defaults to `prefix`.
+- `mode`: `action`, `prefix`, `query`, `files`, `workflow`, `emoji`, `clipboard`, or `menu`; defaults to `prefix`.
 - `label`, `icon`, `iconFont`, `description`: Result presentation.
 - `rootDescription`: Optional description for the extension shortcut in Extensions and global search. Use it when activating the extension differs from activating one of its results; defaults to `description`.
 - `priority`: Selection priority; defaults to `0`.
