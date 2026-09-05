@@ -1,15 +1,32 @@
 import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
+import Quickshell.Hyprland
 import QtQuick
 import qs.Commons
 import qs.Ui
 import "MenuModel.js" as MenuModel
+import "MenuLayout.js" as MenuLayout
+import "MenuFiles.js" as MenuFiles
 import "MenuMarkdown.js" as MenuMarkdown
 import "extensions/currency" as CurrencyExtension
 
 Item {
   id: root
+  property var openingScreen: null
+
+  function selectOpeningScreen() {
+    if (root.opened) return
+    var name = Hyprland.focusedMonitor ? Hyprland.focusedMonitor.name : ""
+    var screens = Quickshell.screens
+    for (var i = 0; i < screens.length; i++) {
+      if (screens[i].name === name) {
+        root.openingScreen = screens[i]
+        return
+      }
+    }
+    root.openingScreen = screens.length ? screens[0] : null
+  }
 
   // Injected by omarchy-shell when this plugin is summoned.
   property string omarchyPath: Quickshell.env("OMARCHY_PATH")
@@ -219,6 +236,8 @@ Item {
   readonly property string fileIndexHelper: root.pluginPath + "/extensions/files/file-index.py"
   readonly property string extensionLoaderHelper: root.pluginPath + "/libexec/load-extensions.py"
   readonly property string configHelper: root.pluginPath + "/libexec/omalaunch-config"
+  readonly property string providerConfigHelper: root.pluginPath + "/libexec/provider-config"
+  readonly property string agentLauncher: root.pluginPath + "/libexec/omalaunch-launch-agent"
   readonly property string fileIndexInstanceId: Date.now() + "-" + Math.floor(Math.random() * 1000000000)
   readonly property string fileIndexPathPrefix: Quickshell.env("XDG_RUNTIME_DIR")
     ? Quickshell.env("XDG_RUNTIME_DIR") + "/omalaunch-file-index-" + root.fileIndexInstanceId
@@ -233,6 +252,8 @@ Item {
   property string fileCopyFeedbackPath: ""
   property string fileCopyFeedback: ""
   property bool actionPanelActive: false
+
+  property bool agentToolsAvailable: false
 
   // Ctrl+K actions float over the surface they were summoned from instead of
   // replacing it, so the row they belong to stays on screen and selected.
@@ -262,6 +283,8 @@ Item {
     && root.selectedIndex >= 0 && root.selectedIndex < displayModel.count
     ? displayModel.get(root.selectedIndex) : null
   readonly property string selectedFilePath: root.selectedFileRow ? String(root.selectedFileRow.action || "") : ""
+  readonly property bool selectedFileNavigation: !!root.selectedFileRow
+    && root.selectedFileRow.itemId === "file.navigation.parent"
   readonly property bool imagePreviewActive: MenuModel.isImagePath(root.selectedFilePath)
   readonly property var selectedWorkflowNode: root.workflowActive && !root.fileBrowserActive
     && root.workflowNode && root.workflowNode.kind === "menu" && root.cursorActive
@@ -384,6 +407,7 @@ Item {
   readonly property real menuItemScale: menuItemFontSize / Style.font.body
   readonly property int menuSecondaryFontSize: Math.max(1, Math.round(Style.font.bodySmall * menuItemScale))
   readonly property int menuCaptionFontSize: Math.max(1, Math.round(Style.font.caption * menuItemScale))
+  readonly property int actionBarLabelFontSize: menuCaptionFontSize
   readonly property int menuItemIconSize: Math.max(Style.space(10), Math.min(Style.space(32),
     Math.round(menuItemFontSize * 1.25)))
   property int baseRowHeight: Math.max(Style.space(28), Math.round(Style.space(44) * menuItemScale))
@@ -394,6 +418,7 @@ Item {
   property int rowSpacing: Math.max(Style.space(1), Math.round(Style.spacing.xs * menuItemScale))
   property int dividerHeight: Style.space(17)
   readonly property int emptyStateHeight: Math.max(Style.space(108), Math.round(Style.space(132) * menuItemScale))
+  readonly property int imagePreviewMinRowsHeight: Style.space(340)
   property bool searchDivider: false
   property int layoutSerial: 0
 
@@ -465,8 +490,17 @@ Item {
     : root.fixedCardWidth, panel.width - Style.gapsOut * 2)
   readonly property bool emptyRoot: !root.dmenuActive && !root.workflowActive && !root.emojiPickerActive
     && root.activeMenu === "root" && !root.filterText && displayModel.count === 0
-  readonly property bool workflowFilterMenuActive: root.workflowActive && root.workflowNode && root.workflowNode.kind === "menu"
-  property int workflowHintHeight: (root.workflowInputActive || root.workflowFilterMenuActive)
+  readonly property bool filterMenuHintActive: root.actionPanelActive
+    || (root.workflowActive && root.workflowNode && root.workflowNode.kind === "menu")
+  readonly property bool canConfigureExtension: root.workflowActive && root.workflowExtension
+    && root.workflowExtension.mode === "menu" && root.workflowNode && root.workflowNode.id === "root"
+    && root.workflowExtension.configurationProvider === root.workflowExtension.id
+  readonly property bool canRefreshWorkflow: root.workflowActive && root.workflowExtension
+    && root.workflowExtension.mode === "menu" && root.workflowNode
+    && (root.workflowNode.refreshable === true
+      || (root.workflowNode.refreshable == null && root.workflowExtension.refreshable))
+    && (root.workflowNode.id === "root" || root.workflowNode.reloadCommand)
+  property int workflowHintHeight: (root.workflowInputActive || root.filterMenuHintActive)
     ? Math.max(Style.space(12), Math.round(Style.space(18) * menuItemScale)) : 0
   property int cardHeight: root.dmenuActive
     ? Math.min(contentMargin + actionBarBottomPadding + headerHeight + actionBarHeight + contentSpacing
@@ -501,25 +535,38 @@ Item {
     ? MenuModel.extensionRootCapability(displayModel.get(root.selectedIndex).itemId) : ""
 
   readonly property var actionBarHints: MenuModel.actionBarHints({
+    primaryActionLabel: MenuModel.selectedPrimaryActionLabel({
+      selectedFileNavigation: root.selectedFileNavigation,
+      workflowInputActive: root.workflowInputActive,
+      workflowNode: root.workflowNode,
+      selectedWorkflowNode: root.selectedWorkflowNode,
+      selectedDynamicSearchNode: root.selectedDynamicSearchEntry ? root.selectedDynamicSearchEntry.node : null
+    }),
     dmenuActive: root.dmenuActive,
     dmenuInput: root.dmenuActive && root.mode === "input",
     workflowActive: root.workflowActive,
     workflowInputActive: root.workflowInputActive,
     fileBrowserActive: root.fileBrowserActive,
+    fileSelectionType: root.selectedFileRow && root.selectedFileRow.itemId.indexOf("file.item.") === 0
+      ? "file" : "directory",
     directoryPickerActive: root.directoryPickerActive,
     actionPanelActive: root.actionPanelActive,
     emojiPickerActive: root.emojiPickerActive,
     clipboardPickerActive: root.clipboardPickerActive,
-    canRefresh: root.workflowActive && root.workflowExtension && root.workflowExtension.mode === "menu"
-      && root.workflowNode && (root.workflowNode.id === "root" || root.workflowNode.reloadCommand),
+    canRefresh: root.canRefreshWorkflow,
+    canConfigure: root.canConfigureExtension,
+    canSettings: !root.dmenuActive && !root.workflowActive && !root.fileBrowserActive
+      && root.activeMenu === "root",
     canContextActions: root.selectedWorkflowHasActions
       || (root.documentActive && root.activeDocument && root.activeDocument.actions.length > 0)
       || (root.selectedDynamicSearchEntry && root.selectedDynamicSearchEntry.node.actions.length > 0),
     focusedExtension: !!root.focusedExtension,
     hasSelection: root.selectionCount > 0 && root.cursorActive,
+    fileActionsAvailable: !root.selectedFileNavigation,
     canStar: root.emojiPickerActive
       ? false
-      : (((!root.dmenuActive && !root.workflowActive && !root.actionPanelActive && !root.clipboardPickerActive)
+      : (!root.selectedFileNavigation
+        && ((!root.dmenuActive && !root.workflowActive && !root.actionPanelActive && !root.clipboardPickerActive)
           || !!root.selectedWorkflowStarAction || !!root.selectedDynamicStarAction)
         && displayModel.count > 0 && root.cursorActive && root.selectedIndex >= 0
         && root.selectedIndex < displayModel.count
@@ -597,6 +644,59 @@ Item {
     if (!command) return
 
     Util.execDetached(command)
+  }
+
+  function footerActionAvailable(id) {
+    for (var index = 0; index < root.actionBarHints.length; index++)
+      if (root.actionBarHints[index].id === id) return true
+    return false
+  }
+
+  function triggerFooterAction(id) {
+    if (!root.footerActionAvailable(id)) return false
+    if (id === "primary") {
+      if (root.workflowInputActive) root.submitWorkflowInput()
+      else if (root.dmenuActive) {
+        if (root.mode === "input") root.applyDmenuSelection(root.filterText)
+        else if (displayModel.count > 0) root.activateIndex(root.cursorActive ? root.selectedIndex : 0)
+      } else if (root.cursorActive) root.activateIndex(root.selectedIndex)
+      else return false
+    } else if (id === "refresh") root.refreshWorkflowSurface()
+    else if (id === "settings") {
+      if (root.canConfigureExtension) root.openExtensionConfiguration()
+      else root.openSettings()
+    }
+    else if (id === "actions") {
+      if (!root.workflowActive && root.selectedDynamicSearchEntry) root.openDynamicSearchActions()
+      else if (root.workflowActive && !root.fileBrowserActive) root.openWorkflowActions()
+      else if (root.fileBrowserActive) root.openActionPanel()
+    } else if (id === "copy") {
+      if (root.emojiPickerActive) root.copySelectedEmoji()
+      else if (root.clipboardPickerActive) root.copySelectedClipboardEntry()
+      else root.copySelectedFile()
+    }
+    else if (id === "star") {
+      if (root.workflowActive) root.toggleSelectedWorkflowStar()
+      else if (root.selectedDynamicStarAction) root.toggleSelectedDynamicStar()
+      else root.toggleSelectedStar()
+    } else if (id === "capability") root.requestDeleteSelected()
+    else return false
+    return true
+  }
+
+  function handleFooterShortcut(event) {
+    if (event.modifiers & (Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier)) return false
+    var key = event.key === Qt.Key_Return || event.key === Qt.Key_Enter
+      ? "Enter" : String.fromCharCode(event.key).toUpperCase()
+    var modifiers = event.modifiers & Qt.ControlModifier ? "Ctrl" : ""
+    var id = MenuModel.footerActionIdForShortcut(key, modifiers)
+    if (id && root.triggerFooterAction(id)) return true
+    // Keep the existing global Settings shortcut outside the root footer.
+    if (id === "settings" && !root.dmenuActive) {
+      root.openSettings()
+      return true
+    }
+    return false
   }
 
   function refreshAppIconsIfStale() {
@@ -1158,6 +1258,17 @@ Item {
     root.submenuLoading = false
   }
 
+  function openExtensionConfiguration() {
+    if (!root.canConfigureExtension) return
+    root.enterSubmenu({
+      id: "extension-configuration",
+      label: "Settings",
+      submenuCommand: [root.providerConfigHelper, "configuration-menu", root.workflowExtension.configurationProvider,
+        root.workflowExtension.id],
+      submenuRefreshCommand: []
+    })
+  }
+
   function enterSubmenu(node) {
     if (!node || !node.submenuCommand || node.submenuCommand.length === 0
         || !root.workflowExtension || root.workflowStack.length >= root.workflowMaxDepth
@@ -1180,7 +1291,7 @@ Item {
       return MenuModel.workflowInterpolate(argument, root.workflowValues())
     })
     root.workflowNode = { id: node.id + ".submenu", kind: "menu", label: node.label,
-      description: "Loading…", items: [], reloadCommand: reloadCommand }
+      description: "Loading…", items: [], reloadCommand: reloadCommand, refreshable: node.refreshable }
     root.filterText = ""
     root.selectedIndex = 0
     root.cursorActive = false
@@ -1233,7 +1344,7 @@ Item {
       return MenuModel.workflowInterpolate(argument, root.workflowValues())
     })
     root.workflowNode = { id: node.id + ".document", kind: "document", label: node.label,
-      document: null, reloadCommand: reloadCommand }
+      document: null, reloadCommand: reloadCommand, refreshable: node.refreshable }
     root.filterText = ""
     root.selectedIndex = 0
     root.cursorActive = false
@@ -2147,6 +2258,14 @@ Item {
     return slash <= 0 ? "/" : value.substring(0, slash)
   }
 
+  function navigateFileBrowserParent() {
+    root.fileBrowserPath = root.parentPath(root.fileBrowserPath)
+    root.filterText = ""
+    root.fileEntries = []
+    root.selectedIndex = 0
+    root.scheduleFileScan()
+  }
+
   function removeFileIndex(path) {
     if (path) Quickshell.execDetached(["rm", "-f", "--", path])
   }
@@ -2231,6 +2350,21 @@ Item {
       })
       displayModel.append(root.displayRow(selectItem, root.fileBrowserPath, -1))
     }
+    var homePath = Quickshell.env("HOME")
+    if (MenuModel.isHomeOrAncestorPath(root.fileBrowserPath, homePath)) {
+      var parentItem = root.normalizeItem("file.navigation.parent", {
+        icon: "󱧰",
+        label: "Parent directory",
+        description: root.parentPath(root.fileBrowserPath),
+        action: root.parentPath(root.fileBrowserPath)
+      })
+      var parentQuery = MenuModel.prepareSearchQuery(root.filterText.trim())
+      if (!parentQuery || MenuModel.matchesQuery(parentItem, parentQuery, true)) {
+        var parentRow = root.displayRow(parentItem, parentItem.description, -2)
+        parentRow.starred = false
+        displayModel.append(parentRow)
+      }
+    }
     for (var i = 0; i < root.fileEntries.length; i++) {
       var entry = root.fileEntries[i]
       var isDirectory = entry.type === "directory"
@@ -2255,60 +2389,52 @@ Item {
   function rebuildActionPanel() {
     displayModel.clear()
     if (!root.actionPanelFile || !root.fileBrowserExtension) return
-    var actions = root.actionPanelFile.type === "directory"
-      ? [
-          { id: "open-files", icon: "󰉋", label: "Open in Files" },
-          { id: "open-terminal", icon: "", label: "Open in terminal" }
-        ]
-      : [{ id: "open", icon: "󰈔", label: "Open" }]
-    actions = actions.concat([
-      {
-        id: "toggle-star",
-        icon: "★",
-        label: root.isFileFavoriteStarred(root.actionPanelFile.path, root.actionPanelFile.type)
-          ? "Unstar" : "Star"
-      },
-      { id: "copy-path", icon: "󰆏", label: "Copy path" },
-      { id: "copy-file", icon: "󰆏", label: "Copy file to clipboard" }
-    ])
+    var actions = MenuFiles.actionDefinitions(root.actionPanelFile.type,
+      root.isFileFavoriteStarred(root.actionPanelFile.path, root.actionPanelFile.type),
+      root.agentToolsAvailable)
+    var actionQuery = MenuModel.prepareSearchQuery(root.filterText.trim())
     for (var i = 0; i < actions.length; i++) {
       var action = actions[i]
       var item = root.normalizeItem("file.action." + action.id, {
         icon: action.icon,
         label: action.label,
-        description: root.actionPanelFile.path,
+        description: "",
         action: action.id
       })
+      if (actionQuery && !MenuModel.matchesQuery(item, actionQuery, true)) continue
       var row = root.displayRow(item, root.actionPanelFile.path, i)
       row.starred = false
       displayModel.append(row)
     }
     root.layoutSerial += 1
     root.selectedIndex = 0
-    root.cursorActive = true
-    Qt.callLater(function() { root.revealCursor() })
+    root.cursorActive = displayModel.count > 0
+    Qt.callLater(function() { if (displayModel.count > 0) root.revealCursor() })
   }
 
   function openActionPanel() {
     if (!root.fileBrowserActive || root.selectedIndex < 0 || root.selectedIndex >= displayModel.count) return
     var row = displayModel.get(root.selectedIndex)
-    if (!row || row.itemId.indexOf("file.") !== 0 || row.itemId.indexOf("file.action.") === 0) return
+    if (!row || (row.itemId.indexOf("file.item.") !== 0 && row.itemId.indexOf("file.directory.") !== 0)) return
     root.actionPanelFile = {
       index: root.selectedIndex,
       itemId: row.itemId,
       path: row.action,
       name: row.label,
-      type: row.itemId.indexOf("file.directory.") === 0 ? "directory" : "file"
+      type: row.itemId.indexOf("file.directory.") === 0 ? "directory" : "file",
+      filter: root.filterText
     }
+    root.filterText = ""
     root.actionPanelActive = true
     root.rebuildActionPanel()
   }
 
   function closeActionPanel() {
-    var previousIndex = root.actionPanelFile ? root.actionPanelFile.index : 0
+    var restored = MenuFiles.restoredBrowserState(root.actionPanelFile)
     root.actionPanelActive = false
     root.actionPanelFile = null
-    root.selectedIndex = previousIndex
+    root.filterText = restored.filter
+    root.selectedIndex = restored.index
     root.rebuildFileDisplay()
   }
 
@@ -2320,25 +2446,25 @@ Item {
     fileCopyProc.running = true
   }
 
-  function copySelectedFilePath() {
+  function copySelectedFile() {
     if (!root.fileBrowserActive || root.selectedIndex < 0 || root.selectedIndex >= displayModel.count) return
     var row = displayModel.get(root.selectedIndex)
-    if (!row || !root.fileBrowserExtension) return
-    root.startFileCopy(row.action, root.fileBrowserExtension.copyCommand, "Copied path")
+    if (!row || !root.fileBrowserExtension
+        || (row.itemId.indexOf("file.item.") !== 0 && row.itemId.indexOf("file.directory.") !== 0)) return
+    var isFile = row.itemId.indexOf("file.item.") === 0
+    root.startFileCopy(row.action,
+      isFile ? root.fileBrowserExtension.copyFileCommand : root.fileBrowserExtension.copyCommand,
+      isFile ? "Copied file" : "Copied path")
   }
 
   function activateFileAction(action) {
     if (!root.actionPanelFile || !root.fileBrowserExtension) return
     var path = root.actionPanelFile.path
     if (action === "toggle-star") {
-      var selectedItemId = root.actionPanelFile.itemId
-      var selectedType = root.actionPanelFile.type
-      var previousIndex = root.actionPanelFile.index
-      root.actionPanelActive = false
-      root.actionPanelFile = null
-      root.selectedIndex = previousIndex
-      root.pendingStarSelectionId = selectedItemId
-      root.toggleFileFavorite(path, selectedType)
+      var restored = MenuFiles.restoredBrowserState(root.actionPanelFile)
+      root.closeActionPanel()
+      root.pendingStarSelectionId = restored.itemId
+      root.toggleFileFavorite(restored.path, restored.type)
       return
     }
     if (action === "copy-path" || action === "copy-file") {
@@ -2349,10 +2475,18 @@ Item {
       return
     }
 
+    var actionDirectory = root.actionPanelFile.type === "directory" ? path : root.parentPath(path)
     var commandToRun = action === "open-terminal"
       ? root.fileBrowserExtension.terminalCommand
-      : (action === "open-files" ? root.fileBrowserExtension.directoryCommand : root.fileBrowserExtension.command)
-    var shellAction = root.shellCommand(commandToRun, { path: path })
+      : (action === "open-files" || action === "show-files"
+        ? root.fileBrowserExtension.directoryCommand
+        : (action === "start-agent"
+          ? [root.agentLauncher, "--dir", "{directory}"]
+          : root.fileBrowserExtension.command))
+    var shellAction = root.shellCommand(commandToRun, {
+      path: action === "show-files" ? actionDirectory : path,
+      directory: actionDirectory
+    })
     root.actionPanelActive = false
     root.fileBrowserActive = false
     root.resetFileIndex()
@@ -2405,6 +2539,27 @@ Item {
       label: "Omalaunch Settings",
       title: "Omalaunch Settings"
     })
+    nextItems["settings.configuration"] = root.normalizeItem("settings.configuration", {
+      parent: "settings",
+      kind: "menu",
+      icon: "󰒓",
+      label: "Configuration",
+      title: "Configuration"
+    })
+    nextItems["settings.configuration.open"] = root.normalizeItem("settings.configuration.open", {
+      parent: "settings.configuration",
+      kind: "action",
+      icon: "󰈙",
+      label: "Open config file",
+      action: "open-config"
+    })
+    nextItems["settings.configuration.agent"] = root.normalizeItem("settings.configuration.agent", {
+      parent: "settings.configuration",
+      kind: "action",
+      icon: "󰚩",
+      label: "Edit with agent",
+      action: "edit-config-agent"
+    })
     nextItems["settings.font-size"] = root.normalizeItem("settings.font-size", {
       parent: "settings",
       kind: "menu",
@@ -2439,9 +2594,10 @@ Item {
     })
     var rootIndex = nextOrder.indexOf("root")
     var insertAt = rootIndex >= 0 ? rootIndex + 1 : 0
-    nextOrder.splice(insertAt, 0, "omarchy", "extensions", "settings", "settings.font-size")
+    nextOrder.splice(insertAt, 0, "omarchy", "extensions", "settings", "settings.configuration",
+      "settings.configuration.open", "settings.configuration.agent", "settings.font-size")
     for (var fontOptionIndex = 0; fontOptionIndex < fontOptions.length; fontOptionIndex++)
-      nextOrder.splice(insertAt + 4 + fontOptionIndex, 0, "settings.font-size." + fontOptions[fontOptionIndex][0])
+      nextOrder.splice(insertAt + 7 + fontOptionIndex, 0, "settings.font-size." + fontOptions[fontOptionIndex][0])
     root.items = nextItems
     root.itemOrder = nextOrder
     root.rebuildItemMetadata()
@@ -3200,7 +3356,14 @@ Item {
   }
 
   function setFilter(nextFilter) {
-    if (root.actionPanelActive) return
+    if (root.actionPanelActive) {
+      root.filterText = nextFilter
+      root.selectedIndex = 0
+      root.cursorActive = true
+      root.disarmPointer()
+      root.rebuildActionPanel()
+      return
+    }
     if (root.workflowActive && root.workflowNode && root.workflowNode.kind === "input")
       nextFilter = String(nextFilter || "").substring(0, root.workflowNode.maxLength)
     root.filterText = nextFilter
@@ -3230,7 +3393,36 @@ Item {
   }
 
   function openSettings() {
-    root.resetForOpen()
+    if (root.dmenuActive) return
+
+    // Ctrl+Comma changes the route of the visible launcher. Do not use the
+    // fresh-open reset here: its opened=false transition destroys the overlay
+    // for one frame before openRoute() creates it again.
+    root.invalidateWorkflowAction("opened settings")
+    root.invalidateBackgroundAction("opened settings")
+    root.invalidateSubmenu("opened settings")
+    root.invalidateDocument("opened settings")
+    root.invalidateDynamicMenu()
+    root.invalidateExtensionQuery("opened settings")
+    root.routePendingForMenuSources = false
+    root.resetFileIndex()
+
+    var reset = MenuModel.openStateReset()
+    for (var key in reset) root[key] = reset[key]
+    root.fileBrowserShowHidden = false
+    root.workflowConfirmOpen = false
+    root.workflowConfirmNode = null
+    root.deleteConfirmOpen = false
+    root.deleteTarget = null
+    root.dependencyConfirmOpen = false
+    root.dependencyTarget = null
+    root.mode = "menu"
+    root.requestActive = false
+    root.selectionFile = ""
+    root.doneFile = ""
+    root.dmenuPrompt = ""
+    root.dmenuOptions = []
+    root.dmenuRows = []
     root.openRoute("settings")
   }
 
@@ -3387,6 +3579,10 @@ Item {
       root.selectWorkflowDirectory(row.action)
       return
     }
+    if (root.fileBrowserActive && row.itemId === "file.navigation.parent") {
+      root.navigateFileBrowserParent()
+      return
+    }
     if (root.fileBrowserActive && row.itemId.indexOf("file.") === 0) {
       if (row.itemId.indexOf("file.directory.") === 0) {
         root.fileBrowserPath = row.action
@@ -3403,6 +3599,13 @@ Item {
         root.opened = false
         root.runAction(openCommand)
       }
+      return
+    }
+    if (row.itemId === "settings.configuration.open" || row.itemId === "settings.configuration.agent") {
+      root.applySerial = root.requestSerial
+      root.opened = false
+      root.runAction(root.shellCommand([root.configHelper,
+        row.itemId === "settings.configuration.open" ? "open-config" : "edit-config-agent"], {}))
       return
     }
     if (root.isFontSizeSetting(row.itemId)) {
@@ -3630,6 +3833,7 @@ Item {
     cursorActive = true
     root.disarmPointer()
     root.evaluateGuards(false)
+    root.selectOpeningScreen()
     opened = true
     rebuildDisplay()
     invalidateVolatileProvider(activeMenu)
@@ -3677,6 +3881,7 @@ Item {
     selectedIndex = 0
     cursorActive = mode !== "input"
     root.disarmPointer()
+    root.selectOpeningScreen()
     opened = true
     rebuildDisplay()
 
@@ -3748,6 +3953,16 @@ Item {
       root.fileCopyFeedbackPath = ""
       root.fileCopyFeedback = ""
       if (root.fileBrowserActive) root.rebuildFileDisplay()
+    }
+  }
+
+  Process {
+    id: agentToolsCheckProc
+    command: ["python", "-c", "import shutil,sys; sys.exit(0 if shutil.which('omarchy-agent') and shutil.which('omarchy-default-agent') else 1)"]
+    running: true
+    onExited: function(exitCode) {
+      root.agentToolsAvailable = exitCode === 0
+      if (root.actionPanelActive) root.rebuildActionPanel()
     }
   }
 
@@ -4904,6 +5119,7 @@ Item {
 
   PanelWindow {
     id: panel
+    screen: root.openingScreen
     visible: root.opened && root.rowsLoaded
     anchors { top: true; bottom: true; left: true; right: true }
     color: "transparent"
@@ -5012,51 +5228,36 @@ Item {
             return
           }
 
-          if (root.workflowActive && event.key === Qt.Key_R && (event.modifiers & Qt.ControlModifier)) {
-            root.refreshWorkflowSurface()
-            event.accepted = true
-          } else if (!root.dmenuActive && event.key === Qt.Key_Comma && (event.modifiers & Qt.ControlModifier)) {
-            root.openSettings()
+          if (root.handleFooterShortcut(event)) {
             event.accepted = true
           } else if (root.workflowInputActive
               && ((event.key === Qt.Key_V && (event.modifiers & Qt.ControlModifier))
                 || (event.key === Qt.Key_Insert && (event.modifiers & Qt.ShiftModifier)))) {
             if (!pasteProc.running) pasteProc.running = true
             event.accepted = true
-          } else if (!root.workflowActive && root.selectedDynamicSearchEntry && event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
-            root.openDynamicSearchActions()
-            event.accepted = true
-          } else if (root.workflowActive && !root.fileBrowserActive && event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
-            root.openWorkflowActions()
-            event.accepted = true
           } else if (root.fileBrowserActive && !root.directoryPickerActive && !root.actionPanelActive && event.key === Qt.Key_H && (event.modifiers & Qt.ControlModifier)) {
             root.toggleHiddenFiles()
-            event.accepted = true
-          } else if (root.fileBrowserActive && !root.directoryPickerActive && !root.actionPanelActive && event.key === Qt.Key_K && (event.modifiers & Qt.ControlModifier)) {
-            root.openActionPanel()
-            event.accepted = true
-          } else if (root.fileBrowserActive && !root.directoryPickerActive && !root.actionPanelActive && event.key === Qt.Key_C && (event.modifiers & Qt.ControlModifier)) {
-            root.copySelectedFilePath()
-            event.accepted = true
-          } else if (root.workflowActive && root.selectedWorkflowStarAction && event.key === Qt.Key_S && (event.modifiers & Qt.ControlModifier)) {
-            root.toggleSelectedWorkflowStar()
-            event.accepted = true
-          } else if (!root.workflowActive && root.selectedDynamicStarAction && event.key === Qt.Key_S && (event.modifiers & Qt.ControlModifier)) {
-            root.toggleSelectedDynamicStar()
-            event.accepted = true
-          } else if (!root.dmenuActive && !root.workflowActive && event.key === Qt.Key_S && (event.modifiers & Qt.ControlModifier)) {
-            root.toggleSelectedStar()
             event.accepted = true
           } else if (event.key === Qt.Key_Delete) {
             root.requestDeleteSelected()
             event.accepted = true
-          } else if (event.key === Qt.Key_Escape) {
-            if (root.actionPanelActive) root.closeActionPanel()
-            else if (root.workflowInputActive) root.workflowBack()
+          } else if (event.key === Qt.Key_Escape && event.modifiers === Qt.NoModifier) {
+            if (root.fileBrowserActive) {
+              var fileEscape = MenuModel.fileEscapeAction({
+                actionPanelActive: root.actionPanelActive,
+                hasFilter: !!root.filterText,
+                path: root.fileBrowserPath,
+                home: Quickshell.env("HOME"),
+                directoryPickerActive: root.directoryPickerActive
+              })
+              if (fileEscape === "close-actions") root.closeActionPanel()
+              else if (fileEscape === "clear-search") root.setFilter("")
+              else if (fileEscape === "parent") root.navigateFileBrowserParent()
+              else if (fileEscape === "leave-picker") root.workflowBack()
+              else root.leaveFileBrowser()
+            } else if (root.workflowInputActive) root.workflowBack()
             else if (root.focusedExtension) root.leaveFocusedExtension()
             else if (root.filterText) root.setFilter("")
-            else if (root.directoryPickerActive) root.workflowBack()
-            else if (root.fileBrowserActive) root.leaveFileBrowser()
             else if (root.workflowActive) root.workflowBack()
             else if (root.activeMenu !== "root") root.goBack()
             else root.cancel()
@@ -5079,17 +5280,14 @@ Item {
           } else if (!root.documentActive && Util.editsFilter(event, root.filterText)) {
             root.setFilter(Util.editedFilter(event, root.filterText))
             event.accepted = true
-          } else if ((event.key === Qt.Key_Backspace || event.key === Qt.Key_Left) && !root.filterText) {
+          } else if (event.key === Qt.Key_Left && !root.filterText) {
             if (root.actionPanelActive) root.closeActionPanel()
             else if (root.fileBrowserActive) {
               if (root.fileBrowserPath === "/") {
                 if (root.directoryPickerActive) root.workflowBack()
                 else root.leaveFileBrowser()
               } else {
-                root.fileBrowserPath = root.parentPath(root.fileBrowserPath)
-                root.fileEntries = []
-                root.selectedIndex = 0
-                root.scheduleFileScan()
+                root.navigateFileBrowserParent()
               }
             } else if (root.workflowActive) root.workflowBack()
             else if (root.focusedExtension) root.leaveFocusedExtension()
@@ -5108,12 +5306,7 @@ Item {
             root.select(6)
             event.accepted = true
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Right) {
-            if (root.workflowInputActive) root.submitWorkflowInput()
-            else if (root.dmenuActive) {
-              if (root.mode === "input") root.applyDmenuSelection(root.filterText)
-              else if (displayModel.count > 0) root.activateIndex(root.cursorActive ? root.selectedIndex : 0)
-            } else if (root.cursorActive) root.activateIndex(root.selectedIndex)
-            else if (displayModel.count > 0) root.cursorActive = true
+            if (!root.triggerFooterAction("primary") && displayModel.count > 0) root.cursorActive = true
             event.accepted = true
           } else if (!root.documentActive && event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127 && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)) {
             root.setFilter(root.filterText + event.text)
@@ -5254,7 +5447,8 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             anchors.rightMargin: root.emojiPickerActive && emojiCaptionText.text ? emojiCaptionText.width + Style.space(12) : 0
             text: root.actionPanelActive
-              ? ("Actions for " + ((root.actionPanelFile && root.actionPanelFile.name) || "file"))
+              ? (root.filterText
+                || ("Actions for " + ((root.actionPanelFile && root.actionPanelFile.name) || "file")))
               : root.clipboardPickerActive
                 ? (root.filterText || "Search clipboard…")
               : root.emojiPickerActive
@@ -5317,12 +5511,14 @@ Item {
         Text {
           width: parent.width
           height: root.workflowHintHeight
-          visible: root.workflowInputActive || root.workflowFilterMenuActive
+          visible: root.workflowInputActive || root.filterMenuHintActive
           text: root.workflowInputActive
             ? root.workflowText(root.workflowNode ? (root.workflowNode.prompt || root.workflowNode.label) : "")
-            : root.workflowText(root.workflowNode
-                ? root.workflowNode.label
-                : (root.workflowExtension ? root.workflowExtension.label : "Select an item"))
+            : (root.actionPanelActive
+              ? ((root.actionPanelFile && root.actionPanelFile.name) || "File")
+              : root.workflowText(root.workflowNode
+                  ? root.workflowNode.label
+                  : (root.workflowExtension ? root.workflowExtension.label : "Select an item")))
           color: root.foreground
           opacity: 0.58
           font.family: root.fontFamily
@@ -6342,7 +6538,7 @@ Item {
                   color: root.foreground
                   opacity: 0.68
                   font.family: root.fontFamily
-                  font.pixelSize: root.menuSecondaryFontSize
+                  font.pixelSize: root.actionBarLabelFontSize
                   anchors.verticalCenter: parent.verticalCenter
                 }
 

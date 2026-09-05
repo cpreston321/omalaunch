@@ -273,21 +273,30 @@ const workflowExtensions = menu.parseExtensions(JSON.stringify([{
   }
 }]))
 const dynamicMenuExtensions = menu.parseExtensions(JSON.stringify([{
-  schemaVersion: 1, id: 'quicklinks', capability: 'quicklinks', mode: 'menu', label: 'Quicklinks',
+  schemaVersion: 1, id: 'omalaunch.quicklinks', capability: 'quicklinks', mode: 'menu', label: 'Quicklinks',
   prefixes: ['links'], command: ['{extensionDir}/bin/menu', '--json'], globalSearch: true,
-  globalSearchCommand: ['{extensionDir}/bin/menu', '--global-search']
+  globalSearchCommand: ['{extensionDir}/bin/menu', '--global-search'],
+  configuration: { provider: 'omalaunch.quicklinks' }
 }, {
   schemaVersion: 1, id: 'private-menu', mode: 'menu', label: 'Private', prefixes: ['private'], command: ['private-menu']
 }]))
 assert(dynamicMenuExtensions.length === 2 && dynamicMenuExtensions[0].command[0] === '{extensionDir}/bin/menu', 'dynamic menu provider extensions are parsed')
 assert(dynamicMenuExtensions[0].globalSearch && !dynamicMenuExtensions[1].globalSearch, 'dynamic menu global search is explicit opt-in')
 assert(dynamicMenuExtensions[0].globalSearchCommand[1] === '--global-search', 'dynamic menus retain a separate global search command')
+assert(dynamicMenuExtensions[0].refreshable === false, 'dynamic menus do not show manual refresh by default')
+assert(menu.normalizeExtension({ schemaVersion: 1, id: 'refreshable-menu', mode: 'menu', label: 'Refreshable', prefixes: ['refreshable'], command: ['menu'], refreshable: true }).refreshable === true, 'dynamic menus can opt in to manual refresh')
+assert(menu.normalizeExtension({ schemaVersion: 1, id: 'bad-refreshable', mode: 'menu', label: 'Bad', prefixes: ['bad'], command: ['menu'], refreshable: 'no' }) === null, 'refreshable must be boolean')
+assert(menu.normalizeExtension({ schemaVersion: 1, id: 'wrong-mode-refreshable', mode: 'prefix', label: 'Bad', prefixes: ['bad'], command: ['run'], refreshable: true }) === null, 'refreshable is limited to menu extensions')
+assert(menu.normalizeExtension({ schemaVersion: 1, id: 'bad-configuration', mode: 'menu', label: 'Bad', prefixes: ['bad'], command: ['menu'], configuration: { provider: '' } }) === null, 'configuration providers must be nonempty')
+assert(menu.normalizeExtension({ schemaVersion: 1, id: 'replacement.quicklinks', capability: 'quicklinks', mode: 'menu', label: 'Bad', prefixes: ['bad'], command: ['menu'], configuration: { provider: 'omalaunch.quicklinks' } }) === null, 'a replacement cannot target another provider configuration')
+assert(menu.normalizeExtension({ schemaVersion: 1, id: 'unknown.provider', mode: 'menu', label: 'Bad', prefixes: ['bad'], command: ['menu'], configuration: { provider: 'unknown.provider' } }) === null, 'unknown provider configuration menus are not shown')
+assert(menu.normalizeExtension({ schemaVersion: 1, id: 'wrong-mode-configuration', mode: 'prefix', label: 'Bad', prefixes: ['bad'], command: ['run'], configuration: { provider: 'bad' } }) === null, 'configuration metadata is limited to menu extensions')
 assert(menu.normalizeExtension({ schemaVersion: 1, id: 'bad-search-command', mode: 'menu', label: 'Bad', prefixes: ['bad'], command: ['menu'], globalSearch: true, globalSearchCommand: 'search' }) === null, 'global search commands must be argument arrays')
 assert(menu.normalizeExtension({ schemaVersion: 1, id: 'disabled-search-command', mode: 'menu', label: 'Bad', prefixes: ['bad'], command: ['menu'], globalSearchCommand: ['search'] }) === null, 'separate search commands require global search opt-in')
 assert(menu.normalizeExtension({ schemaVersion: 1, id: 'wrong-mode-search-command', mode: 'prefix', label: 'Bad', prefixes: ['bad'], command: ['run'], globalSearchCommand: ['search'] }) === null, 'separate search commands are limited to menu extensions')
 assert(menu.extensionRootActivation(dynamicMenuExtensions[0]) === 'menu', 'dynamic menu roots start their provider')
 const dynamicMenu = menu.normalizeDynamicMenuOutput(JSON.stringify({ items: [
-  { id: 'open', label: 'Open docs', description: 'Documentation', aliases: ['manual', 'reference'], starred: true, starAction: 'star', command: ['xdg-open', 'https://example.test'], closeOnSuccess: true, actions: [
+  { id: 'open', label: 'Open docs', primaryActionLabel: 'Open', refreshable: true, description: 'Documentation', aliases: ['manual', 'reference'], starred: true, starAction: 'star', command: ['xdg-open', 'https://example.test'], closeOnSuccess: true, actions: [
     { id: 'star', label: 'Unstar', command: ['links', 'star', 'open', 'false'] },
     { id: 'open', label: 'Open', command: ['xdg-open', 'https://example.test'], closeOnSuccess: true },
     { id: 'delete', label: 'Delete', confirm: 'Delete this link?', confirmLabel: 'Delete', command: ['links', 'delete', 'open'], refreshExtensions: true }
@@ -299,6 +308,11 @@ assert(dynamicMenu.items[0].kind === 'action' && dynamicMenu.items[0].actions[2]
 assert(dynamicMenu.items[0].closeOnSuccess, 'launch rows can request launcher closure after successful dispatch')
 assert(dynamicMenu.items[0].starred, 'dynamic rows retain explicit starred state')
 assert(dynamicMenu.items[0].starAction === 'star', 'dynamic rows can identify a direct Ctrl+S star action')
+assert(dynamicMenu.items[0].primaryActionLabel === 'Open', 'dynamic rows retain their custom primary footer label')
+assert(dynamicMenu.items[0].refreshable === true && dynamicMenu.items[1].refreshable === null,
+  'dynamic rows can override refresh while omitted values inherit the extension default')
+assert(menu.normalizeDynamicMenuOutput(JSON.stringify({ items: [{ id: 'bad-refresh', label: 'Bad', command: ['bad'], refreshable: 'yes' }] })) === null,
+  'dynamic-node refreshable values must be boolean')
 const dynamicSearchItems = menu.dynamicMenuSearchItems(dynamicMenuExtensions[0], dynamicMenu)
 assert(dynamicSearchItems.length === 2 && dynamicSearchItems[0].aliases.join(',') === 'manual,reference', 'search rows retain bounded provider aliases')
 assert(menu.matchesQuery(dynamicSearchItems[0], menu.prepareSearchQuery('documentation'), true), 'dynamic menu rows search descriptions')
@@ -659,17 +673,56 @@ const fileActionHints = menu.actionBarHints({
   canStar: true,
   starred: false
 })
+assert(fileActionHints.map(hint => hint.id).join(',') === 'primary,copy,star,actions',
+  'footer actions use stable host-owned IDs')
 assert(fileActionHints.map(hint => `${hint.label}:${hint.shortcut}`).join(',')
-  === 'Open:Enter,Actions:Ctrl K,Copy Path:Ctrl C,Star:Ctrl S',
-  'the action bar lists every available file shortcut')
+  === 'Open:Enter,Copy Path:Ctrl C,Star:Ctrl S,Actions:Ctrl K',
+  'the action bar lists every available file shortcut in registry order')
+const individualFileActionHints = menu.actionBarHints({
+  fileBrowserActive: true, fileSelectionType: 'file', hasSelection: true
+})
+assert(individualFileActionHints.some(hint => hint.id === 'copy' && hint.label === 'Copy' && hint.shortcut === 'Ctrl C'),
+  'the individual-file action bar offers Copy instead of Copy Path')
+const parentFileHints = menu.actionBarHints({
+  fileBrowserActive: true, fileSelectionType: 'directory', hasSelection: true,
+  fileActionsAvailable: false, primaryActionLabel: 'Go up'
+})
+assert(parentFileHints.map(hint => hint.id).join(',') === 'primary' && parentFileHints[0].label === 'Go up',
+  'the parent navigation row offers only its primary action')
+assert(menu.actionBarHints({ hasSelection: true, workflowActive: true, primaryActionLabel: dynamicMenu.items[0].primaryActionLabel })[0].label === 'Open',
+  'dynamic rows can replace the default Continue footer label')
+assert(menu.selectedPrimaryActionLabel({ workflowInputActive: true, workflowNode: { primaryActionLabel: 'Create' } }) === 'Create',
+  'input stages propagate their primary footer label')
+assert(menu.selectedPrimaryActionLabel({ selectedDynamicSearchNode: dynamicMenu.items[0] }) === 'Open',
+  'global dynamic results propagate their primary footer label')
+const footerDefinitions = menu.footerActionDefinitions()
+assert(footerDefinitions.map(action => action.id).join(',') === 'primary,refresh,copy,star,actions,settings,capability'
+  && footerDefinitions.map(action => action.order).join(',') === '10,20,30,40,50,60,70',
+  'the footer registry owns stable IDs and display order')
+assert(menu.footerActionIdForShortcut('Enter', '') === 'primary'
+  && menu.footerActionIdForShortcut('R', 'Ctrl') === 'refresh'
+  && menu.footerActionIdForShortcut('R', '') === '',
+  'keyboard lookup uses the footer registry key descriptors')
 const starredActionHints = menu.actionBarHints({ hasSelection: true, canStar: true, starred: true })
 assert(starredActionHints.some(hint => hint.label === 'Unstar' && hint.shortcut === 'Ctrl S'),
   'the action bar reflects the selected favorite state')
 const refreshActionHints = menu.actionBarHints({ hasSelection: true, canRefresh: true })
 assert(refreshActionHints.some(hint => hint.label === 'Refresh' && hint.shortcut === 'Ctrl R'),
   'refreshable extension surfaces advertise Ctrl+R')
-assert(menu.compactActionBarHints(refreshActionHints.concat([{ label: 'Star', shortcut: 'Ctrl S' }])).map(hint => hint.label).join(',') === 'Open,Refresh',
+assert(menu.compactActionBarHints(refreshActionHints.concat([{ id: 'star', label: 'Star', shortcut: 'Ctrl S' }])).map(hint => hint.label).join(',') === 'Open,Refresh',
   'narrow action bars retain refresh when no action panel is available')
+const configurationActionHints = menu.actionBarHints({ hasSelection: true, canRefresh: true, canStar: true, canContextActions: true, canConfigure: true })
+assert(configurationActionHints.map(hint => hint.label).join(',') === 'Open,Refresh,Star,Actions,Settings'
+  && configurationActionHints[4].shortcut === 'Ctrl ,',
+  'configurable extension surfaces place Settings at the right edge')
+assert(menu.compactActionBarHints(configurationActionHints).map(hint => hint.label).join(',') === 'Open,Actions',
+  'narrow configurable extension footers retain the action-panel shortcut')
+const settingsActionHints = menu.actionBarHints({ hasSelection: true, canStar: true, canContextActions: true, canSettings: true })
+assert(settingsActionHints.map(hint => hint.label).join(',') === 'Open,Star,Actions,Settings'
+  && settingsActionHints[3].shortcut === 'Ctrl ,',
+  'the top-level footer places Settings at the right edge')
+assert(menu.compactActionBarHints(settingsActionHints).map(hint => hint.label).join(',') === 'Open,Actions',
+  'narrow top-level footers retain the action-panel shortcut')
 const inputActionHints = menu.actionBarHints({ dmenuActive: true, dmenuInput: true })
 assert(inputActionHints.map(hint => hint.label).join(',') === 'Submit',
   'input requests only advertise their submit action')
@@ -684,6 +737,24 @@ assert(menu.compactActionBarHints(starredActionHints).map(hint => hint.label).jo
 const resetOpenState = menu.openStateReset({ workflowActive: true, fileBrowserActive: true })
 assert(resetOpenState.workflowActive === false && resetOpenState.workflowNode === null && resetOpenState.workflowStack.length === 0, 'new opens reset workflow state')
 assert(resetOpenState.fileBrowserActive === false && resetOpenState.directoryPickerActive === false && resetOpenState.fileBrowserExtension === null, 'new opens reset file browser and directory picker state')
+assert(menu.fileEscapeAction({ actionPanelActive: true, hasFilter: true, path: '/home/test/docs', home: '/home/test' }) === 'close-actions',
+  'Escape closes Files actions before it changes their saved search')
+assert(menu.fileEscapeAction({ hasFilter: true, path: '/home/test/docs', home: '/home/test' }) === 'clear-search',
+  'Escape clears a Files search before it navigates')
+assert(menu.fileEscapeAction({ path: '/home/test/docs', home: '/home/test' }) === 'parent',
+  'Escape below home navigates to the parent directory')
+assert(menu.fileEscapeAction({ path: '/home/test', home: '/home/test' }) === 'leave-files'
+  && menu.fileEscapeAction({ path: '/', home: '/home/test' }) === 'leave-files',
+  'Escape leaves Files at home and at the filesystem root')
+assert(menu.fileEscapeAction({ path: '/home', home: '/home/test' }) === 'parent',
+  'Escape continues parent navigation above home')
+assert(menu.fileEscapeAction({ path: '/', home: '/home/test', directoryPickerActive: true }) === 'leave-picker',
+  'Escape at the directory-picker root returns to its workflow')
+assert(menu.isHomeOrAncestorPath('/home/test', '/home/test')
+  && menu.isHomeOrAncestorPath('/home', '/home/test')
+  && !menu.isHomeOrAncestorPath('/home/test/docs', '/home/test')
+  && !menu.isHomeOrAncestorPath('/', '/home/test'),
+  'parent directory rows appear only at home and its non-root ancestors')
 assert(resetOpenState.focusedExtension === null && resetOpenState.actionPanelActive === false && resetOpenState.resultExtension === null, 'new opens reset focused and action-panel state')
 
 const bundledMissingQalc = menu.parseExtensions(JSON.stringify([{
