@@ -5159,7 +5159,12 @@ Item {
               : root.documentActive
                 ? (root.activeDocument ? root.activeDocument.title : root.workflowNode.label)
               : root.workflowActive
-                ? root.filterText
+                // An input stage echoes the typed value and puts its prompt in
+                // the hint line below, so it must stay empty. Every other
+                // workflow surface is filterable, and with nothing here the
+                // header still occupied its full height — a blank band above
+                // the first row of a dynamic menu.
+                ? (root.workflowInputActive ? root.filterText : (root.filterText || "Search…"))
               : (root.filterText || (root.dmenuActive ? (root.dmenuPrompt + "…") : ((root.item(root.activeMenu) ? (root.item(root.activeMenu).title || root.item(root.activeMenu).label) : "Go") + "…")))
             color: root.foreground
             opacity: root.documentActive || root.filterText ? 1 : 0.58

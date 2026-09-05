@@ -182,7 +182,7 @@ assert(qml.includes('id: dynamicMenuSearchKillTimer')
   && qml.includes('dynamicMenuSearchProc.signal(9)')
   && qml.includes('dynamicMenuSearchKillTimer.stop()'),
 'global menu preload cancellation escalates SIGTERM safely and disarms stale escalation on exit')
-assert(qml.includes(': root.workflowActive\n                ? root.filterText')
+assert(qml.includes('? (root.workflowInputActive ? root.filterText : (root.filterText || "Search…"))')
   && qml.includes('height: root.workflowHintHeight')
   && qml.includes('visible: root.workflowInputActive || root.workflowFilterMenuActive')
   && qml.includes('root.workflowNode ? (root.workflowNode.prompt || root.workflowNode.label)')
