@@ -26,6 +26,7 @@ def _subprocess():
 STATE_DIR = os.path.expanduser("~/.local/state/omarchy/omalaunch-layouts")
 MAX_LAYOUTS = 90
 DESIGNER_ID = "cpreston.layout-designer"
+DESIGNER_URL = "https://github.com/cpreston321/omalaunch-layout-designer"
 
 
 def designer_available():
@@ -867,6 +868,14 @@ def build_menu(extension_dir):
             "command": ["omarchy-shell", "shell", "summon", DESIGNER_ID, "{}"],
             "closeOnDispatch": True,
         })
+    else:
+        items.append({
+            "id": "get-designer",
+            "label": "Get the layout designer…",
+            "description": "Draw layouts on a canvas — a separate one-time plugin",
+            "icon": "󰝤",
+            "document": {"command": [binary, "designer-doc", "--dir", extension_dir]},
+        })
 
     for layout in load_all()[:MAX_LAYOUTS]:
         slug = layout["slug"]
@@ -973,6 +982,46 @@ def build_preview_menu(extension_dir):
             "document": {"command": [binary, "document", slug, "--dir", extension_dir]},
         })
     return {"items": items}
+
+
+def build_designer_document():
+    """Explain the designer and offer to install it.
+
+    The install runs in a terminal rather than silently: `omarchy plugin add`
+    shows its own trust warning and asks for confirmation, and cloning and
+    enabling code is not a decision this extension should take for the user.
+    """
+    return {
+        "title": "Layout designer",
+        "subtitle": "Optional plugin for Layouts",
+        "status": "Not installed",
+        "sections": [
+            {"heading": "What it adds", "format": "markdown",
+             "text": "Draw a window arrangement on a canvas instead of capturing one.\n\n"
+                     "Tiles are the leaves of a split tree, so they always partition the "
+                     "screen and never overlap: drag a boundary and every tile sharing it "
+                     "moves, drag one tile onto another to swap their applications, and "
+                     "split a tile horizontally or vertically. The canvas mirrors the real "
+                     "screen with Hyprland's own gaps, so the preview is where the windows land."},
+            {"heading": "Why it is separate", "format": "markdown",
+             "text": "Omalaunch extensions cannot ship QML, so the canvas has to be its own "
+                     "Omarchy plugin. Everything else in Layouts — capturing the current "
+                     "windows, applying a layout as real tiles or at exact pixels, preview, "
+                     "rename and delete — works without it."},
+            {"heading": "Install", "format": "markdown",
+             "text": "```\nomarchy plugin add " + DESIGNER_URL + " --enable\n```\n\n"
+                     "Omarchy shows its plugin trust warning and asks you to confirm. Reopen "
+                     "Layouts afterwards, or press Ctrl+R, and **Design a new layout…** appears."},
+        ],
+        "actions": [
+            {"id": "install", "label": "Install in a terminal",
+             "command": ["omarchy-launch-terminal", "omarchy", "plugin", "add",
+                         DESIGNER_URL, "--enable"],
+             "closeOnSuccess": True},
+            {"id": "repo", "label": "Open the repository",
+             "command": ["xdg-open", DESIGNER_URL], "closeOnSuccess": True},
+        ],
+    }
 
 
 def build_document(slug, extension_dir):
@@ -1112,6 +1161,7 @@ USAGE = """usage: layouts <command> [args]
   menu [--dir D]            emit the dynamic menu
   preview-menu [--dir D]    emit the preview submenu
   document SLUG [--dir D]   emit a layout's detail document
+  designer-doc              emit the designer install document
   save NAME [--exact] [--overwrite]
   apply SLUG [--launch] [--tiled] [--detach]
   delete SLUG
@@ -1162,6 +1212,9 @@ def main():
         return 0
     if command == "preview-menu":
         json.dump(build_preview_menu(extension_dir), sys.stdout)
+        return 0
+    if command == "designer-doc":
+        json.dump(build_designer_document(), sys.stdout)
         return 0
     if command == "document":
         if not argv:
