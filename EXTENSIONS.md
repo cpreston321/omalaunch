@@ -704,6 +704,7 @@ The highest-priority matching live-query extension runs. Live queries debounce f
 - `mode`: `action`, `prefix`, `query`, `files`, `workflow`, `emoji`, `clipboard`, or `menu`; defaults to `prefix`.
 - `label`, `icon`, `iconFont`, `description`: Result presentation.
 - `rootDescription`: Optional description for the extension shortcut in Extensions and global search. Use it when activating the extension differs from activating one of its results; defaults to `description`.
+- `tone`: Semantic weight of a row or action: `neutral`, `success`, `danger`, `warning`, or `info`; defaults to `neutral`. The action popover paints a `danger` action in the theme's urgent colour so a destructive choice reads as one. Invalid values fall back to `neutral`.
 - `priority`: Selection priority; defaults to `0`.
 - `requires`: Executable names that must be available on `PATH`.
 - `command`: Argument array. Prefix mode supports `{prompt}`; query mode supports `{query}`; menu providers support `{extensionDir}`.

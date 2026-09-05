@@ -674,6 +674,10 @@ function normalizeWorkflowNode(raw, state, depth) {
     trailingText: boundedWorkflowText(raw.trailingText, 64),
     badge: boundedWorkflowText(raw.badge, 16),
     badgeTone: normalizeBadgeTone(raw.badgeTone),
+    // Semantic weight of the entry itself, as opposed to its badge. The action
+    // popover paints a "danger" action so a destructive choice is not one
+    // indistinguishable row among several.
+    tone: normalizeBadgeTone(raw.tone),
     context: workflowContext(raw.context),
     items: [],
     next: null,

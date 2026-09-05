@@ -890,6 +890,7 @@ def build_menu(extension_dir):
                 {
                     "id": "apply-launch",
                     "label": "Apply and launch missing apps",
+                    "icon": "\U000f040a",
                     "command": [binary, "apply", slug, "--launch"],
                     "closeOnSuccess": True,
                 },
@@ -897,18 +898,21 @@ def build_menu(extension_dir):
                 *([{
                     "id": "apply-exact",
                     "label": "Apply exactly (reuse open windows)",
+                    "icon": "\U000f0d8b",
                     "command": [binary, "apply", slug],
                     "closeOnSuccess": True,
                 }] if apply_mode(layout) == "tiled" else
                   [{
                     "id": "apply-tiled",
                     "label": "Apply as real tiles (opens fresh windows)",
+                    "icon": "\U000f0ac0",
                     "command": [binary, "apply", slug, "--tiled", "--detach"],
                     "closeOnDispatch": True,
                   }] if layout.get("designed") else []),
                 {
                     "id": "overwrite",
                     "label": "Overwrite with current windows",
+                    "icon": "\U000f0193",
                     "confirm": "Replace “%s” with the current window arrangement?" % name,
                     "confirmLabel": "Overwrite",
                     "command": [binary, "save", name, "--overwrite"],
@@ -916,6 +920,7 @@ def build_menu(extension_dir):
                 *([{
                     "id": "design",
                     "label": "Edit in designer" if layout.get("designed") else "Redraw in designer",
+                    "icon": "\U000f0764",
                     "command": ["omarchy-shell", "shell", "summon", DESIGNER_ID,
                                 json.dumps({"slug": slug})],
                     "closeOnDispatch": True,
@@ -923,6 +928,7 @@ def build_menu(extension_dir):
                 {
                     "id": "rename",
                     "label": "Rename…",
+                    "icon": "\U000f03eb",
                     "input": {
                         "prompt": "New name",
                         "default": name,
@@ -933,6 +939,8 @@ def build_menu(extension_dir):
                 {
                     "id": "delete",
                     "label": "Delete layout",
+                    "icon": "\U000f01b4",
+                    "tone": "danger",
                     "confirm": "Delete the saved layout “%s”?" % name,
                     "confirmLabel": "Delete",
                     "command": [binary, "delete", slug],
@@ -1002,11 +1010,11 @@ def build_document(slug, extension_dir):
         ],
         "fields": fields,
         "actions": [
-            {"id": "apply", "label": "Apply layout",
+            {"id": "apply", "label": "Apply layout", "icon": "\U000f0d8b",
              "command": [binary, "apply", slug], "closeOnSuccess": True},
-            {"id": "apply-launch", "label": "Apply and launch missing apps",
+            {"id": "apply-launch", "label": "Apply and launch missing apps", "icon": "\U000f040a",
              "command": [binary, "apply", slug, "--launch"], "closeOnSuccess": True},
-            {"id": "delete", "label": "Delete layout",
+            {"id": "delete", "label": "Delete layout", "icon": "\U000f01b4", "tone": "danger",
              "confirm": "Delete the saved layout “%s”?" % name,
              "confirmLabel": "Delete", "command": [binary, "delete", slug]},
         ],
