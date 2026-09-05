@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "omalaunch.layouts",
+  "capability": "layouts",
+  "mode": "menu",
+  "label": "Layouts",
+  "icon": "󱒌",
+  "description": "Save and restore window layouts",
+  "rootDescription": "Capture the current window arrangement and reapply it later",
+  "prefixes": [
+    "layout"
+  ],
+  "requires": [
+    "hyprctl",
+    "python3"
+  ],
+  "globalSearch": true,
+  "command": [
+    "{extensionDir}/layouts",
+    "menu",
+    "--dir",
+    "{extensionDir}"
+  ]
+}

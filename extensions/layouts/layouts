@@ -1,0 +1,1202 @@
+#!/usr/bin/env python3
+"""Save and restore Hyprland window layouts from Omalaunch.
+
+Subcommands are invoked by the extension's menu rows; nothing here is meant to
+be typed by hand, though every one of them works from a terminal.
+"""
+
+import json
+import os
+import sys
+
+# Deferred: `re`, `shutil`, `subprocess`, `time` and `datetime` are only needed
+# by the capture/apply paths. Importing them eagerly cost ~25 ms on the menu
+# path, which renders from a handful of small JSON files and needs none of them.
+
+def _re():
+    import re
+    return re
+
+
+def _subprocess():
+    import subprocess
+    return subprocess
+
+
+STATE_DIR = os.path.expanduser("~/.local/state/omarchy/omalaunch-layouts")
+MAX_LAYOUTS = 90
+DESIGNER_ID = "cpreston.layout-designer"
+
+
+def designer_available():
+    """Whether the optional layout-designer plugin is installed."""
+    for root in ("~/.config/omarchy/plugins", os.environ.get("OMARCHY_PATH", "") + "/shell/plugins"):
+        if root.startswith("/shell"):
+            continue
+        if os.path.isdir(os.path.join(os.path.expanduser(root), DESIGNER_ID)):
+            return True
+    return False
+
+# Hyprland's `reserved` is [left, top, right, bottom]. The bottom reservation
+# belongs to a third-party dock that floats over the desktop, so designed
+# layouts use that space rather than avoid it. Keep in step with the designer
+# plugin's layout-store, which makes the same choice for its canvas.
+IGNORE_BOTTOM_RESERVED = True
+GRID_W = 58
+GRID_H = 17
+
+
+# --- hyprctl ---------------------------------------------------------------
+
+def hypr(*args):
+    out = _subprocess().run(
+        ["hyprctl", "-j", *args], capture_output=True, text=True, timeout=5
+    )
+    if out.returncode != 0:
+        raise RuntimeError("hyprctl %s failed: %s" % (" ".join(args), out.stderr.strip()))
+    return json.loads(out.stdout or "null")
+
+
+# --- storage ---------------------------------------------------------------
+
+def slugify(name):
+    slug = _re().sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return slug[:64] or "layout"
+
+
+def layout_path(slug):
+    return os.path.join(STATE_DIR, slug + ".json")
+
+
+def load_layout(slug):
+    with open(layout_path(slug), encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def load_all():
+    if not os.path.isdir(STATE_DIR):
+        return []
+    layouts = []
+    for entry in sorted(os.listdir(STATE_DIR)):
+        if not entry.endswith(".json"):
+            continue
+        slug = entry[:-5]
+        try:
+            layout = load_layout(slug)
+        except (OSError, ValueError):
+            continue
+        layout["slug"] = slug
+        layouts.append(layout)
+    layouts.sort(key=lambda item: item.get("name", "").lower())
+    return layouts
+
+
+def write_layout(slug, layout):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    tmp = layout_path(slug) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        json.dump(layout, handle, indent=2)
+    os.replace(tmp, layout_path(slug))
+
+
+# --- capture ---------------------------------------------------------------
+
+def cmdline_for(pid):
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as handle:
+            parts = [p.decode("utf-8", "replace") for p in handle.read().split(b"\0") if p]
+        return parts[:32]
+    except OSError:
+        return []
+
+
+def capture(exact=False):
+    clients = hypr("clients") or []
+    monitors = hypr("monitors") or []
+    try:
+        active = hypr("activewindow") or {}
+    except RuntimeError:
+        active = {}
+    active_address = active.get("address", "")
+
+    monitor_index = {m.get("id"): m for m in monitors}
+    saved_monitors = []
+    for mon in monitors:
+        scale = mon.get("scale") or 1.0
+        saved_monitors.append({
+            "name": mon.get("name", ""),
+            "width": int(round((mon.get("width") or 0) / scale)),
+            "height": int(round((mon.get("height") or 0) / scale)),
+            "x": mon.get("x", 0),
+            "y": mon.get("y", 0),
+            "activeWorkspace": (mon.get("activeWorkspace") or {}).get("name", ""),
+        })
+
+    windows = []
+    for client in clients:
+        if not client.get("mapped", True):
+            continue
+        workspace = client.get("workspace") or {}
+        mon = monitor_index.get(client.get("monitor"))
+        windows.append({
+            "class": client.get("class", ""),
+            "initialClass": client.get("initialClass", ""),
+            "title": client.get("title", ""),
+            "initialTitle": client.get("initialTitle", ""),
+            "workspace": workspace.get("name", ""),
+            "workspaceId": workspace.get("id"),
+            "monitor": (mon or {}).get("name", ""),
+            "floating": bool(client.get("floating")) or exact,
+            "at": client.get("at", [0, 0]),
+            "size": client.get("size", [0, 0]),
+            "fullscreen": client.get("fullscreen", 0),
+            "pinned": bool(client.get("pinned")),
+            "pid": client.get("pid"),
+            "cmdline": cmdline_for(client.get("pid") or 0),
+            "focused": client.get("address", "") == active_address,
+        })
+
+    return {
+        "version": 1,
+        "exact": bool(exact),
+        "saved": __import__("datetime").datetime.now().isoformat(timespec="seconds"),
+        "monitors": saved_monitors,
+        "windows": windows,
+    }
+
+
+# --- omarchy spacing -------------------------------------------------------
+
+def gap_values(option):
+    """Hyprland css gap data reads 'top right bottom left'."""
+    try:
+        data = hypr("getoption", option) or {}
+        nums = [int(round(float(v))) for v in str(data.get("css", "")).split()[:4]]
+    except (RuntimeError, ValueError, TypeError):
+        nums = []
+    while len(nums) < 4:
+        nums.append(nums[-1] if nums else 0)
+    return {"top": nums[0], "right": nums[1], "bottom": nums[2], "left": nums[3]}
+
+
+def border_size():
+    try:
+        return int((hypr("getoption", "general:border_size") or {}).get("int", 0) or 0)
+    except (RuntimeError, ValueError, TypeError):
+        return 0
+
+
+def live_geometry(monitor_name):
+    monitors = hypr("monitors") or []
+    target = next((m for m in monitors if m.get("name") == monitor_name), None)
+    if target is None:
+        target = monitors[0] if monitors else None
+    if not target:
+        return None
+    scale = target.get("scale") or 1.0
+    width = int(round((target.get("width") or 0) / scale))
+    height = int(round((target.get("height") or 0) / scale))
+    if width <= 0 or height <= 0:
+        return None
+    reserved = list(target.get("reserved") or [0, 0, 0, 0])
+    while len(reserved) < 4:
+        reserved.append(0)
+    if IGNORE_BOTTOM_RESERVED:
+        reserved[3] = 0
+    return {
+        "width": width,
+        "height": height,
+        # Logical origin of this monitor in the global layout. Window
+        # coordinates are global, so a layout on any screen that is not at
+        # 0,0 has to be offset by it or it lands on the wrong monitor.
+        "x": target.get("x", 0),
+        "y": target.get("y", 0),
+        "usable": {
+            "x": reserved[0] / width,
+            "y": reserved[1] / height,
+            "w": 1 - (reserved[0] + reserved[2]) / width,
+            "h": 1 - (reserved[1] + reserved[3]) / height,
+        },
+    }
+
+
+def apply_omarchy_spacing(layout):
+    """Re-derive a designed layout's pixels against the live screen and gaps.
+
+    The designer stores fractions of a partition that tiles the whole usable
+    area. Hyprland insets each tiled window by gaps_out at a screen edge and
+    gaps_in at a boundary with another window, plus the border on every side,
+    so doing the same here makes an applied layout sit exactly where Omarchy's
+    own tiling would put it. Working from fractions also means the layout still
+    lands correctly if the resolution or the bar's height has changed since it
+    was designed.
+    """
+    if not layout.get("designed"):
+        return
+    design = layout.get("designerUsable") or {}
+    if not design.get("w") or not design.get("h"):
+        return
+    geometry = live_geometry((layout.get("monitors") or [{}])[0].get("name"))
+    if not geometry:
+        return
+
+    gaps_in = gap_values("general:gaps_in")
+    gaps_out = gap_values("general:gaps_out")
+    border = border_size()
+    live = geometry["usable"]
+    width, height = geometry["width"], geometry["height"]
+    edge = 0.002
+
+    for window in layout.get("windows", []):
+        frac = window.get("frac")
+        if not frac or len(frac) < 4:
+            continue
+        nx = (frac[0] - design["x"]) / design["w"]
+        ny = (frac[1] - design["y"]) / design["h"]
+        nw = frac[2] / design["w"]
+        nh = frac[3] / design["h"]
+
+        left = geometry["x"] + (live["x"] + nx * live["w"]) * width
+        top = geometry["y"] + (live["y"] + ny * live["h"]) * height
+        span_w = nw * live["w"] * width
+        span_h = nh * live["h"] * height
+
+        inset_l = (gaps_out["left"] if nx <= edge else gaps_in["left"]) + border
+        inset_t = (gaps_out["top"] if ny <= edge else gaps_in["top"]) + border
+        inset_r = (gaps_out["right"] if nx + nw >= 1 - edge else gaps_in["right"]) + border
+        inset_b = (gaps_out["bottom"] if ny + nh >= 1 - edge else gaps_in["bottom"]) + border
+
+        window["at"] = [int(round(left + inset_l)), int(round(top + inset_t))]
+        window["size"] = [
+            max(80, int(round(span_w - inset_l - inset_r))),
+            max(60, int(round(span_h - inset_t - inset_b))),
+        ]
+
+
+# --- matching --------------------------------------------------------------
+
+def tokens(text):
+    return set(_re().findall(r"\w+", (text or "").lower()))
+
+
+def match_score(saved, live):
+    saved_class = saved.get("class", "")
+    saved_initial = saved.get("initialClass", "")
+    live_class = live.get("class", "")
+    live_initial = live.get("initialClass", "")
+
+    if saved_class and saved_class == live_class:
+        score = 100
+    elif saved_initial and saved_initial == live_initial:
+        score = 70
+    elif saved_class and saved_class == live_initial:
+        score = 55
+    elif saved_initial and saved_initial == live_class:
+        score = 55
+    else:
+        return -1
+
+    saved_title = saved.get("title", "")
+    live_title = live.get("title", "")
+    if saved_title and saved_title == live_title:
+        score += 40
+    else:
+        a, b = tokens(saved_title), tokens(live_title)
+        if a and b:
+            score += int(30 * len(a & b) / len(a | b))
+    if saved.get("pid") and saved.get("pid") == live.get("pid"):
+        score += 25
+    return score
+
+
+def pair_windows(saved_windows, clients):
+    """Greedy one-to-one match of saved windows onto live clients."""
+    pairs = []
+    for si, saved in enumerate(saved_windows):
+        for ci, live in enumerate(clients):
+            score = match_score(saved, live)
+            if score >= 0:
+                pairs.append((score, si, ci))
+    pairs.sort(key=lambda item: (-item[0], item[1], item[2]))
+
+    matched, used_saved, used_live = {}, set(), set()
+    for score, si, ci in pairs:
+        if si in used_saved or ci in used_live:
+            continue
+        matched[si] = clients[ci]
+        used_saved.add(si)
+        used_live.add(ci)
+    missing = [saved_windows[i] for i in range(len(saved_windows)) if i not in used_saved]
+    return matched, missing
+
+
+# --- apply -----------------------------------------------------------------
+
+def lua_string(value):
+    """Quote a Python string as a Lua string literal."""
+    out = []
+    for char in str(value):
+        if char == "\\":
+            out.append("\\\\")
+        elif char == '"':
+            out.append('\\"')
+        elif char == "\n":
+            out.append("\\n")
+        elif char == "\r":
+            out.append("\\r")
+        elif ord(char) < 32:
+            out.append("\\%d" % ord(char))
+        else:
+            out.append(char)
+    return '"' + "".join(out) + '"'
+
+
+def workspace_target(name, workspace_id):
+    if not name:
+        return str(workspace_id) if workspace_id is not None else "1"
+    return name
+
+
+LUA_PRELUDE = """
+local byaddr = {}
+for _, w in ipairs(hl.get_windows()) do byaddr[w.address] = w end
+local applied, absent = 0, 0
+
+-- Workspace first, geometry second. Hyprland re-anchors a floating window when
+-- it changes workspace -- measured: a window placed at y=38 came back at y=-7
+-- after the move -- so anything set beforehand is discarded.
+local function assign(addr, ws)
+  local w = byaddr[addr]
+  if not w then absent = absent + 1 return end
+  applied = applied + 1
+  hl.dispatch(hl.dsp.focus({ window = w }))
+  hl.dispatch(hl.dsp.window.move({ workspace = ws, follow = false }))
+end
+
+local function place(addr, floating, x, y, cw, ch, pinned, fs)
+  local w = byaddr[addr]
+  if not w then return end
+  hl.dispatch(hl.dsp.focus({ window = w }))
+  if floating then
+    hl.dispatch(hl.dsp.window.float({ action = "on" }))
+    hl.dispatch(hl.dsp.window.resize({ x = cw, y = ch, relative = false }))
+    hl.dispatch(hl.dsp.window.move({ x = x, y = y, relative = false }))
+    if pinned then hl.dispatch(hl.dsp.window.pin({})) end
+  else
+    hl.dispatch(hl.dsp.window.float({ action = "off" }))
+  end
+  if fs ~= 0 then
+    hl.dispatch(hl.dsp.window.fullscreen({ mode = (fs == 1) and "maximized" or "fullscreen" }))
+  end
+end
+"""
+
+
+def build_lua(layout, matched):
+    lines = [LUA_PRELUDE]
+    focus_address = None
+    placements = {}
+    order = []
+
+    for index, saved in enumerate(layout.get("windows", [])):
+        live = matched.get(index)
+        if not live:
+            continue
+        address = live.get("address", "")
+        target = workspace_target(saved.get("workspace"), saved.get("workspaceId"))
+        left, top = (list(saved.get("at", [0, 0])) + [0, 0])[:2]
+        width, height = (list(saved.get("size", [0, 0])) + [0, 0])[:2]
+
+        lines.append("assign(%s, %s)" % (lua_string(address), lua_string(target)))
+        placements.setdefault(target, []).append(
+            "place(%s, %s, %d, %d, %d, %d, %s, %d)" % (
+                lua_string(address),
+                "true" if saved.get("floating") else "false",
+                int(left), int(top), int(width), int(height),
+                "true" if saved.get("pinned") else "false",
+                int(saved.get("fullscreen") or 0),
+            )
+        )
+        if target not in order:
+            order.append(target)
+        if saved.get("focused"):
+            focus_address = address
+
+    # Geometry is applied per workspace, with that workspace active, so the
+    # windows are laid out in the context they will actually live in.
+    for target in order:
+        lines.append("hl.dispatch(hl.dsp.focus({ workspace = %s }))" % lua_string(target))
+        lines.extend(placements[target])
+
+    # Land on the workspace the layout is for. A designed layout records the
+    # workspace that was merely *active* when it was saved, which is often not
+    # the one it targets -- honouring that is what made an apply look as though
+    # it had gone to the wrong workspace.
+    final = order[0] if order else None
+    if not layout.get("designed"):
+        for monitor in layout.get("monitors", []):
+            if monitor.get("activeWorkspace"):
+                final = workspace_target(monitor.get("activeWorkspace"), None)
+                break
+    if final:
+        lines.append("hl.dispatch(hl.dsp.focus({ workspace = %s }))" % lua_string(final))
+
+    if focus_address:
+        lines.append(
+            "local fw = byaddr[%s] if fw then hl.dispatch(hl.dsp.focus({ window = fw })) end"
+            % lua_string(focus_address)
+        )
+
+    lines.append('return applied .. "/" .. absent')
+    return "\n".join(lines)
+
+
+def run_lua(script):
+    out = _subprocess().run(
+        ["hyprctl", "repl", script], capture_output=True, text=True, timeout=25
+    )
+    text = (out.stdout or "") + (out.stderr or "")
+    if out.returncode != 0 or text.strip().startswith("error:"):
+        raise RuntimeError("hyprctl repl failed: %s" % text.strip()[:400])
+    return text.strip()
+
+
+def launch_command(saved):
+    """Build the launch argv, matching how Omarchy starts applications.
+
+    Omarchy runs desktop apps as `uwsm-app -- gtk-launch <id>.desktop`, which
+    puts each one in its own systemd scope with the session environment. Going
+    through the same path means a window spawned from a layout is treated by
+    the compositor exactly like one launched from the menu, so it picks up the
+    usual window rules and spacing rather than inheriting this script's
+    environment.
+    """
+    desktop_id = saved.get("appId")
+    if desktop_id:
+        inner = ["gtk-launch", str(desktop_id) + ".desktop"]
+    else:
+        inner = list(saved.get("cmdline") or [])
+    if not inner:
+        return []
+    import shutil
+    if shutil.which("uwsm-app"):
+        return ["uwsm-app", "--"] + inner
+    return inner
+
+
+def launch_missing(missing):
+    """Start one application per unmatched window.
+
+    Deliberately no de-duplication: a layout with three terminals needs three
+    terminals, not one reused for every tile.
+    """
+    launched = 0
+    for saved in missing:
+        command = launch_command(saved)
+        if not command:
+            continue
+        try:
+            sp = _subprocess()
+            sp.Popen(
+                command,
+                start_new_session=True,
+                stdout=sp.DEVNULL,
+                stderr=sp.DEVNULL,
+                stdin=sp.DEVNULL,
+            )
+            launched += 1
+        except OSError:
+            continue
+    return launched
+
+
+def wait_for_windows(expected, timeout=15.0):
+    """Poll until the expected number of clients is present, or timeout."""
+    import time
+    deadline = time.time() + timeout
+    clients = []
+    while time.time() < deadline:
+        time.sleep(0.35)
+        try:
+            clients = [c for c in (hypr("clients") or []) if c.get("mapped", True)]
+        except (RuntimeError, ValueError):
+            continue
+        if len(clients) >= expected:
+            return clients
+    return clients
+
+
+def apply_layout(slug, launch=False):
+    layout = load_layout(slug)
+    if layout.get("designed"):
+        launch = True
+        apply_omarchy_spacing(layout)
+    saved_windows = layout.get("windows", [])
+    clients = [c for c in (hypr("clients") or []) if c.get("mapped", True)]
+    matched, missing = pair_windows(saved_windows, clients)
+
+    if launch and missing:
+        started = launch_missing(missing)
+        if started:
+            clients = wait_for_windows(len(clients) + started)
+            matched, missing = pair_windows(saved_windows, clients)
+
+    run_lua(build_lua(layout, matched))
+    return len(matched), len(missing)
+
+
+
+# --- tiled apply -----------------------------------------------------------
+#
+# Exact mode floats every window at computed pixel coordinates: precise, but
+# floating windows sit outside the tiling tree, so they never snap, reflow or
+# swap the way a window opened with Super+Return does.
+#
+# Tiled mode instead rebuilds the layout *as* dwindle's own tree. A designed
+# layout is already a binary split tree and so is dwindle, so the shapes map
+# one to one: focus the window holding a region, `preselect` the direction to
+# split it, then bring in the next window — it lands as that region's sibling.
+# Recursing gives an arbitrary partition made of genuine tiles.
+
+def first_leaf(node):
+    while node and not node.get("leaf"):
+        node = node.get("a")
+    return node or {}
+
+
+def lua_window_action(address, actions=()):
+    """Focus a window by address, then run dispatcher snippets against it."""
+    body = [
+        "local target = %s" % lua_string(address),
+        "local w = nil",
+        "for _, x in ipairs(hl.get_windows()) do if x.address == target then w = x end end",
+        'if not w then return "missing" end',
+        "hl.dispatch(hl.dsp.focus({ window = w }))",
+    ]
+    body.extend(actions)
+    body.append('return "ok"')
+    return run_lua("\n".join(body))
+
+
+def move_to_workspace(address, workspace):
+    return lua_window_action(address, [
+        "hl.dispatch(hl.dsp.window.move({ workspace = %s, follow = false }))"
+        % lua_string(str(workspace))
+    ])
+
+
+def workspace_addresses(workspace):
+    return {c["address"] for c in (hypr("clients") or [])
+            if str((c.get("workspace") or {}).get("name")) == str(workspace)
+            and c.get("mapped", True)}
+
+
+def free_workspace(exclude):
+    used = {str(w.get("name")) for w in (hypr("workspaces") or [])}
+    for index in range(1, 100):
+        name = str(index)
+        if name not in used and name != str(exclude):
+            return name
+    return None
+
+
+def await_new_window(workspace, before, timeout=20.0):
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        time.sleep(0.25)
+        fresh = workspace_addresses(workspace) - before
+        if fresh:
+            return sorted(fresh)[0]
+    return None
+
+
+# Browsers are single-instance: a second `gtk-launch` just focuses the window
+# that is already open ("Opening in existing browser session"), so no new
+# window arrives and the build stalls waiting for one. Ask for a new window
+# explicitly instead, going through the executable rather than the desktop
+# entry since gtk-launch takes no extra arguments.
+BROWSERISH = ("brave", "chrom", "firefox", "vivaldi", "edge", "opera", "zen")
+
+
+def tiled_launch_command(leaf):
+    command = list(leaf.get("command") or [])
+    if command:
+        binary = os.path.basename(command[0]).lower()
+        if any(token in binary for token in BROWSERISH):
+            import shutil
+            inner = command + ["--new-window"]
+            if shutil.which("uwsm-app"):
+                return ["uwsm-app", "--"] + inner
+            return inner
+    return launch_command({"appId": leaf.get("appId"), "cmdline": command})
+
+
+class TiledBuilder(object):
+    """Walks the saved split tree, materialising it as real dwindle tiles."""
+
+    def __init__(self, workspace):
+        self.workspace = workspace
+        self.launched = 0
+
+    def introduce(self, leaf):
+        """Open one window; dwindle places it at the preselected slot.
+
+        Tiled mode always launches rather than reusing a running window.
+        Moving an existing window in means focusing it, and focusing anything
+        other than the anchor clears the preselect — verified: the moved window
+        lands wherever dwindle likes instead of the intended slot. Launching
+        needs no focus change, so the preselect survives and the tree comes out
+        in the designed shape. Exact mode is the one that reuses what is
+        already open.
+        """
+        before = workspace_addresses(self.workspace)
+        command = tiled_launch_command(leaf)
+        if not command:
+            return None
+        try:
+            sp = _subprocess()
+            sp.Popen(command, start_new_session=True, stdout=sp.DEVNULL,
+                     stderr=sp.DEVNULL, stdin=sp.DEVNULL)
+        except OSError:
+            return None
+        self.launched += 1
+        return await_new_window(self.workspace, before)
+
+    def realize(self, node, anchor):
+        """`anchor` is the window currently occupying this node's whole region."""
+        if not node or node.get("leaf"):
+            return
+        direction = "r" if node.get("vertical") else "d"
+        seed = first_leaf(node.get("b"))
+
+        lua_window_action(anchor, ['hl.dispatch(hl.dsp.layout("preselect %s"))' % direction])
+        sibling = self.introduce(seed)
+        if not sibling:
+            return
+
+        # Set the ratio now: at this instant the anchor's parent split is
+        # exactly this node. One recursion deeper and its parent is a
+        # descendant, and the value would land on the wrong boundary.
+        ratio = node.get("ratio", 0.5)
+        try:
+            ratio = max(0.1, min(0.9, float(ratio)))
+        except (TypeError, ValueError):
+            ratio = 0.5
+        # This Hyprland's Lua `layout()` ignores the `exact` keyword, so the
+        # ratio has to be reached with a relative nudge. dwindle's ratio runs
+        # 0..2 with 1.0 meaning an even split, and the split is still even at
+        # this point, so a target fraction f needs a delta of 2f - 1.
+        lua_window_action(anchor, [
+            'hl.dispatch(hl.dsp.layout("splitratio %.4f"))' % (2.0 * ratio - 1.0)
+        ])
+
+        self.realize(node.get("a"), anchor)
+        self.realize(node.get("b"), sibling)
+
+
+def apply_tiled(slug):
+    layout = load_layout(slug)
+    tree = layout.get("designerTree")
+    if not tree:
+        raise RuntimeError(
+            "Tiled mode needs a designed layout; this one was captured and has no split tree.")
+
+    workspace = str((layout.get("windows") or [{}])[0].get("workspace") or "1")
+
+    # dwindle builds relative to what is already there, so the workspace has to
+    # start empty. Anything on it is parked on a free workspace; windows the
+    # layout wants are pulled straight back in, the rest stay parked.
+    stash = free_workspace(workspace)
+    parked = 0
+    if stash:
+        for address in sorted(workspace_addresses(workspace)):
+            move_to_workspace(address, stash)
+            parked += 1
+
+    # New windows open on the *active* workspace, so the target has to be the
+    # active one before anything is launched.
+    run_lua('hl.dispatch(hl.dsp.focus({ workspace = %s })) return "ok"' % lua_string(workspace))
+    import time as _t
+    _t.sleep(0.25)
+
+    builder = TiledBuilder(workspace)
+
+    root_leaf = first_leaf(tree)
+    anchor = builder.introduce(root_leaf)
+    if not anchor:
+        raise RuntimeError("Could not open the first window for this layout.")
+    lua_window_action(anchor, ['hl.dispatch(hl.dsp.window.float({ action = "off" }))'])
+
+    builder.realize(tree, anchor)
+    run_lua('hl.dispatch(hl.dsp.focus({ workspace = %s })) return "ok"' % lua_string(workspace))
+    return builder.launched, parked
+
+
+# --- ascii preview ---------------------------------------------------------
+
+def draw_workspace(windows, monitor):
+    width = monitor.get("width") or 1920
+    height = monitor.get("height") or 1080
+    grid = [[" "] * GRID_W for _ in range(GRID_H)]
+
+    def put(row, col, char):
+        if 0 <= row < GRID_H and 0 <= col < GRID_W:
+            grid[row][col] = char
+
+    for window in windows:
+        left, top = window.get("at", [0, 0])[:2]
+        win_w, win_h = window.get("size", [0, 0])[:2]
+        x0 = max(0, min(GRID_W - 1, int(round(left / width * GRID_W))))
+        y0 = max(0, min(GRID_H - 1, int(round(top / height * GRID_H))))
+        x1 = max(x0 + 2, min(GRID_W - 1, int(round((left + win_w) / width * GRID_W))))
+        y1 = max(y0 + 2, min(GRID_H - 1, int(round((top + win_h) / height * GRID_H))))
+
+        for col in range(x0, x1 + 1):
+            put(y0, col, "-")
+            put(y1, col, "-")
+        for row in range(y0, y1 + 1):
+            put(row, x0, "|")
+            put(row, x1, "|")
+        for row, col in ((y0, x0), (y0, x1), (y1, x0), (y1, x1)):
+            put(row, col, "+")
+
+        label = (window.get("class") or "?")[: max(0, x1 - x0 - 1)]
+        for offset, char in enumerate(label):
+            put(y0 + 1, x0 + 1 + offset, char)
+
+    return "\n".join("".join(row).rstrip() for row in grid)
+
+
+def preview_text(layout):
+    monitors = {m.get("name"): m for m in layout.get("monitors", [])}
+    default_monitor = next(iter(monitors.values()), {"width": 1920, "height": 1080})
+    by_workspace = {}
+    for window in layout.get("windows", []):
+        by_workspace.setdefault(window.get("workspace", "?"), []).append(window)
+
+    blocks = []
+    for name in sorted(by_workspace, key=lambda n: (len(n), n)):
+        windows = by_workspace[name]
+        monitor = monitors.get(windows[0].get("monitor")) or default_monitor
+        header = "Workspace %s  -  %s  %dx%d" % (
+            name, monitor.get("name", "?"), monitor.get("width", 0), monitor.get("height", 0)
+        )
+        blocks.append(header + "\n" + draw_workspace(windows, monitor))
+    return "\n\n".join(blocks) or "No windows captured."
+
+
+# --- menu ------------------------------------------------------------------
+
+def describe(layout):
+    windows = layout.get("windows", [])
+    spaces = sorted({w.get("workspace", "?") for w in windows}, key=lambda n: (len(n), n))
+    parts = ["%d window%s" % (len(windows), "" if len(windows) == 1 else "s")]
+    if spaces:
+        parts.append("workspace " + ", ".join(spaces[:4]) + ("…" if len(spaces) > 4 else ""))
+    if layout.get("designed"):
+        parts.append("tiles" if apply_mode(layout) == "tiled" else "designed")
+    elif layout.get("exact"):
+        parts.append("exact geometry")
+    return " · ".join(parts)
+
+
+def apply_mode(layout):
+    """Which mode Enter uses. Only a designed layout can be rebuilt as tiles.
+
+    Tiles is the default, so a designed layout with no recorded preference —
+    anything saved before the setting existed — applies as real tiles.
+    """
+    if not layout.get("designed"):
+        return "exact"
+    return "exact" if layout.get("applyMode") == "exact" else "tiled"
+
+
+def workspace_of(layout):
+    return str((layout.get("windows") or [{}])[0].get("workspace") or "1")
+
+
+def saved_when(layout):
+    """Format the saved timestamp without importing datetime on the menu path."""
+    stamp = str(layout.get("saved", ""))
+    # ISO 8601 to "Sep 4, 18:50" by slicing: the value is always written by
+    # isoformat(timespec="seconds"), so its shape is fixed.
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    try:
+        month = int(stamp[5:7])
+        day = int(stamp[8:10])
+        return "%s %d, %s" % (months[month - 1], day, stamp[11:16])
+    except (ValueError, IndexError):
+        return ""
+
+
+def build_menu(extension_dir):
+    binary = os.path.join(extension_dir, "layouts")
+    items = [
+        {
+            "id": "save",
+            "label": "Save current layout…",
+            "description": "Capture every open window where it sits right now",
+            "icon": "󰆓",
+            "input": {
+                "prompt": "Layout name",
+                "maxLength": 64,
+                "command": [binary, "save", "{input}"],
+            },
+        },
+        {
+            "id": "save-exact",
+            "label": "Save current layout (exact geometry)…",
+            "description": "Float every window on restore so positions match to the pixel",
+            "icon": "󰆑",
+            "input": {
+                "prompt": "Layout name",
+                "maxLength": 64,
+                "command": [binary, "save", "{input}", "--exact"],
+            },
+        },
+    ]
+
+    if designer_available():
+        items.append({
+            "id": "design",
+            "label": "Design a new layout…",
+            "description": "Draw slots on a canvas and pick the app for each one",
+            "icon": "󰝤",
+            "command": ["omarchy-shell", "shell", "summon", DESIGNER_ID, "{}"],
+            "closeOnDispatch": True,
+        })
+
+    for layout in load_all()[:MAX_LAYOUTS]:
+        slug = layout["slug"]
+        name = layout.get("name", slug)
+        items.append({
+            "id": "layout:" + slug,
+            "label": name,
+            "description": describe(layout),
+            "icon": "󱂬",
+            "badge": str(len(layout.get("windows", []))),
+            "badgeTone": "info",
+            "trailingText": saved_when(layout),
+            # Enter honours the mode chosen in the designer. Tiled builds are
+            # detached, so the row dispatches rather than waiting.
+            **({"command": [binary, "apply", slug, "--tiled", "--detach"],
+                "closeOnDispatch": True}
+               if apply_mode(layout) == "tiled" else
+               {"command": [binary, "apply", slug], "closeOnSuccess": True}),
+            "context": {"slug": slug, "name": name},
+            "actions": [
+                {
+                    "id": "apply-launch",
+                    "label": "Apply and launch missing apps",
+                    "command": [binary, "apply", slug, "--launch"],
+                    "closeOnSuccess": True,
+                },
+                # The mode Enter is not using, as a one-off override.
+                *([{
+                    "id": "apply-exact",
+                    "label": "Apply exactly (reuse open windows)",
+                    "command": [binary, "apply", slug],
+                    "closeOnSuccess": True,
+                }] if apply_mode(layout) == "tiled" else
+                  [{
+                    "id": "apply-tiled",
+                    "label": "Apply as real tiles (opens fresh windows)",
+                    "command": [binary, "apply", slug, "--tiled", "--detach"],
+                    "closeOnDispatch": True,
+                  }] if layout.get("designed") else []),
+                {
+                    "id": "overwrite",
+                    "label": "Overwrite with current windows",
+                    "confirm": "Replace “%s” with the current window arrangement?" % name,
+                    "confirmLabel": "Overwrite",
+                    "command": [binary, "save", name, "--overwrite"],
+                },
+                *([{
+                    "id": "design",
+                    "label": "Edit in designer" if layout.get("designed") else "Redraw in designer",
+                    "command": ["omarchy-shell", "shell", "summon", DESIGNER_ID,
+                                json.dumps({"slug": slug})],
+                    "closeOnDispatch": True,
+                }] if designer_available() else []),
+                {
+                    "id": "rename",
+                    "label": "Rename…",
+                    "input": {
+                        "prompt": "New name",
+                        "default": name,
+                        "maxLength": 64,
+                        "command": [binary, "rename", slug, "{input}"],
+                    },
+                },
+                {
+                    "id": "delete",
+                    "label": "Delete layout",
+                    "confirm": "Delete the saved layout “%s”?" % name,
+                    "confirmLabel": "Delete",
+                    "command": [binary, "delete", slug],
+                },
+            ],
+        })
+
+    if load_all():
+        items.append({
+            "id": "preview",
+            "label": "Preview layouts",
+            "description": "See what each saved layout contains before applying it",
+            "icon": "󰍹",
+            "submenu": {"command": [binary, "preview-menu", "--dir", extension_dir]},
+        })
+    return {"items": items}
+
+
+def build_preview_menu(extension_dir):
+    binary = os.path.join(extension_dir, "layouts")
+    items = []
+    for layout in load_all()[:MAX_LAYOUTS]:
+        slug = layout["slug"]
+        items.append({
+            "id": "preview:" + slug,
+            "label": layout.get("name", slug),
+            "description": describe(layout),
+            "icon": "󱂬",
+            "trailingText": saved_when(layout),
+            "document": {"command": [binary, "document", slug, "--dir", extension_dir]},
+        })
+    return {"items": items}
+
+
+def build_document(slug, extension_dir):
+    binary = os.path.join(extension_dir, "layouts")
+    layout = load_layout(slug)
+    name = layout.get("name", slug)
+    windows = layout.get("windows", [])
+    spaces = sorted({w.get("workspace", "?") for w in windows}, key=lambda n: (len(n), n))
+
+    fields = []
+    for window in windows[:32]:
+        geometry = "%dx%d at %d,%d" % (
+            window.get("size", [0, 0])[0], window.get("size", [0, 0])[1],
+            window.get("at", [0, 0])[0], window.get("at", [0, 0])[1],
+        )
+        state = "floating" if window.get("floating") else "tiled"
+        fields.append({
+            "label": window.get("class", "?"),
+            "value": "ws %s · %s · %s" % (window.get("workspace", "?"), state, geometry),
+        })
+
+    return {
+        "title": name,
+        "subtitle": describe(layout),
+        "status": "Exact geometry" if layout.get("exact") else "Tiled where saved",
+        "icon": "󱂬",
+        "stats": [
+            {"label": "Windows", "value": str(len(windows))},
+            {"label": "Workspaces", "value": str(len(spaces))},
+            {"label": "Saved", "value": saved_when(layout) or "unknown"},
+        ],
+        "sections": [
+            {"heading": "Arrangement", "format": "markdown",
+             "text": "```\n" + preview_text(layout) + "\n```"},
+        ],
+        "fields": fields,
+        "actions": [
+            {"id": "apply", "label": "Apply layout",
+             "command": [binary, "apply", slug], "closeOnSuccess": True},
+            {"id": "apply-launch", "label": "Apply and launch missing apps",
+             "command": [binary, "apply", slug, "--launch"], "closeOnSuccess": True},
+            {"id": "delete", "label": "Delete layout",
+             "confirm": "Delete the saved layout “%s”?" % name,
+             "confirmLabel": "Delete", "command": [binary, "delete", slug]},
+        ],
+    }
+
+
+# --- commands --------------------------------------------------------------
+
+def cmd_save(args):
+    name = (args.name or "").strip()
+    if not name:
+        print("A layout name is required.", file=sys.stderr)
+        return 1
+    slug = slugify(name)
+    if os.path.exists(layout_path(slug)) and not args.overwrite:
+        suffix = 2
+        while os.path.exists(layout_path("%s-%d" % (slug, suffix))):
+            suffix += 1
+        slug = "%s-%d" % (slug, suffix)
+    layout = capture(exact=args.exact)
+    layout["name"] = name
+    write_layout(slug, layout)
+    print("Saved “%s” with %d window(s)." % (name, len(layout["windows"])))
+    return 0
+
+
+def cmd_apply(args):
+    if getattr(args, "detach", False):
+        # Building a tiled layout opens each window in turn and waits for it to
+        # map, which can take longer than the launcher stays alive. Hand the
+        # work to a detached child so activating the row returns at once and
+        # the build survives Omalaunch closing.
+        sp = _subprocess()
+        command = [sys.executable, os.path.abspath(__file__), "apply", args.slug]
+        if getattr(args, "tiled", False):
+            command.append("--tiled")
+        if getattr(args, "launch", False):
+            command.append("--launch")
+        try:
+            sp.Popen(command, start_new_session=True, stdout=sp.DEVNULL,
+                     stderr=sp.DEVNULL, stdin=sp.DEVNULL)
+        except OSError as error:
+            print(str(error), file=sys.stderr)
+            return 1
+        print("Building layout…")
+        return 0
+
+    if getattr(args, "tiled", False):
+        launched, parked = apply_tiled(args.slug)
+        note = "Tiled %d freshly opened window(s)" % launched
+        if parked:
+            note += "; parked %d existing window(s) on a spare workspace" % parked
+        print(note + ".")
+        return 0
+    applied, missing = apply_layout(args.slug, launch=args.launch)
+    print("Applied %d window(s); %d had no match." % (applied, missing))
+    return 0
+
+
+def cmd_delete(args):
+    try:
+        os.remove(layout_path(args.slug))
+    except FileNotFoundError:
+        print("No such layout.", file=sys.stderr)
+        return 1
+    print("Deleted.")
+    return 0
+
+
+def cmd_rename(args):
+    name = (args.name or "").strip()
+    if not name:
+        print("A layout name is required.", file=sys.stderr)
+        return 1
+    layout = load_layout(args.slug)
+    layout["name"] = name
+    new_slug = slugify(name)
+    if new_slug != args.slug and os.path.exists(layout_path(new_slug)):
+        new_slug = args.slug
+    write_layout(new_slug, layout)
+    if new_slug != args.slug:
+        os.remove(layout_path(args.slug))
+    print("Renamed to “%s”." % name)
+    return 0
+
+
+def cmd_list(args):
+    for layout in load_all():
+        print("%-24s %s" % (layout["slug"], describe(layout)))
+    return 0
+
+
+USAGE = """usage: layouts <command> [args]
+
+  menu [--dir D]            emit the dynamic menu
+  preview-menu [--dir D]    emit the preview submenu
+  document SLUG [--dir D]   emit a layout's detail document
+  save NAME [--exact] [--overwrite]
+  apply SLUG [--launch] [--tiled] [--detach]
+  delete SLUG
+  rename SLUG NAME
+  list
+"""
+
+
+class Args(object):
+    """Minimal stand-in for the argparse namespace this used to build."""
+
+    def __init__(self, **fields):
+        self.__dict__.update(fields)
+
+
+def take_option(argv, name):
+    """Pull `--name VALUE` out of argv, returning the value or ''."""
+    if name in argv:
+        at = argv.index(name)
+        if at + 1 < len(argv):
+            value = argv[at + 1]
+            del argv[at:at + 2]
+            return value
+        del argv[at]
+    return ""
+
+
+def take_flag(argv, name):
+    if name in argv:
+        argv.remove(name)
+        return True
+    return False
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] in ("-h", "--help"):
+        sys.stdout.write(USAGE)
+        return 0 if argv else 2
+
+    command = argv.pop(0)
+    extension_dir = take_option(argv, "--dir")
+    if not extension_dir:
+        extension_dir = os.path.dirname(os.path.abspath(__file__))
+
+    if command == "menu":
+        json.dump(build_menu(extension_dir), sys.stdout)
+        return 0
+    if command == "preview-menu":
+        json.dump(build_preview_menu(extension_dir), sys.stdout)
+        return 0
+    if command == "document":
+        if not argv:
+            print("document needs a layout slug.", file=sys.stderr)
+            return 2
+        json.dump(build_document(argv[0], extension_dir), sys.stdout)
+        return 0
+
+    if command == "save":
+        exact = take_flag(argv, "--exact")
+        overwrite = take_flag(argv, "--overwrite")
+        if not argv:
+            print("save needs a layout name.", file=sys.stderr)
+            return 2
+        return cmd_save(Args(name=argv[0], exact=exact, overwrite=overwrite))
+    if command == "apply":
+        launch = take_flag(argv, "--launch")
+        tiled = take_flag(argv, "--tiled")
+        detach = take_flag(argv, "--detach")
+        if not argv:
+            print("apply needs a layout slug.", file=sys.stderr)
+            return 2
+        return cmd_apply(Args(slug=argv[0], launch=launch, tiled=tiled, detach=detach))
+    if command == "delete":
+        if not argv:
+            print("delete needs a layout slug.", file=sys.stderr)
+            return 2
+        return cmd_delete(Args(slug=argv[0]))
+    if command == "rename":
+        if len(argv) < 2:
+            print("rename needs a slug and a new name.", file=sys.stderr)
+            return 2
+        return cmd_rename(Args(slug=argv[0], name=argv[1]))
+    if command == "list":
+        return cmd_list(Args())
+
+    sys.stdout.write(USAGE)
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as error:  # surfaced by Omalaunch as a failed command
+        print(str(error), file=sys.stderr)
+        sys.exit(1)
